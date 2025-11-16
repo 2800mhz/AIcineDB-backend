@@ -1,19 +1,22 @@
 """
-AI Cine Analyzer - Main FastAPI Application
+AI Cine Analyzer - Complete FastAPI Application
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 import logging
+
+from backend.database.connection import database, init_db
+from backend.database.database_operations import DatabaseOperations
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AI Cine Analyzer",
-    description="AI-powered film analysis platform",
+    description="Complete AI-powered film analysis platform",
     version="2.0.0",
 )
 
@@ -27,6 +30,29 @@ app.add_middleware(
 
 
 # ============================================================================
+# STARTUP & SHUTDOWN
+# ============================================================================
+
+@app.on_event("startup")
+async def startup():
+    """Initialize on startup"""
+    logger.info("🚀 AI Cine Analyzer starting...")
+    try:
+        await init_db()
+        logger.info("✓ Database connected")
+        logger.info("✓ AI Cine Analyzer ready!")
+    except Exception as e:
+        logger.error(f"Startup failed: {e}")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Cleanup on shutdown"""
+    logger.info("🛑 Shutting down...")
+    await database.disconnect()
+
+
+# ============================================================================
 # MODELS
 # ============================================================================
 
@@ -35,25 +61,29 @@ class AnalysisRequest(BaseModel):
     url: HttpUrl
     priority: int = 5
     force_reanalyze: bool = False
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-                "priority": 5,
-                "force_reanalyze": False
-            }
-        }
 
 
 class JobResponse(BaseModel):
     """Job status response"""
-    job_id: str
+    job_id: int
     status: str
     url: str
     priority: int
-    created_at: str
-    message: Optional[str] = None
+    progress: float = 0.0
+    current_stage: Optional[str] = None
+    film_id: Optional[int] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+
+
+class FilmSummary(BaseModel):
+    """Film summary"""
+    id: int
+    title: str
+    duration: float
+    url: str
+    analyzed_at: Optional[datetime]
+    style_fingerprint: Optional[str]
 
 
 # ============================================================================
@@ -67,26 +97,29 @@ async def root():
         "name": "AI Cine Analyzer API",
         "version": "2.0.0",
         "status": "running",
-        "description": "Professional film analysis platform",
-        "endpoints": {
-            "GET /health": "Health check",
-            "POST /api/analyze": "Submit video for analysis",
-            "GET /api/jobs/{job_id}": "Get job status",
-            "GET /docs": "API documentation",
-            "GET /": "This page"
-        },
         "features": [
-            "🎬 Cinematography analysis",
-            "📖 Narrative breakdown with AI",
-            "🎭 Character tracking",
-            "🎵 Audio mood analysis",
-            "🔍 Similarity search"
-        ]
+            "🎬 Shot detection & cinematography",
+            "🎨 Visual style classification (CLIP)",
+            "🎤 Audio transcription (Whisper)",
+            "📖 Narrative analysis (Gemini AI)",
+            "🎭 Character tracking & face recognition",
+            "🔍 Vector similarity search",
+            "💾 Complete database storage"
+        ],
+        "endpoints": {
+            "POST /api/analyze": "Submit video for analysis",
+            "GET /api/jobs/{job_id}": "Check job status",
+            "GET /api/films": "List all films",
+            "GET /api/films/{film_id}": "Get film details",
+            "GET /api/films/{film_id}/similar": "Find similar films",
+            "GET /health": "Health check",
+            "GET /docs": "API documentation"
+        }
     }
 
 
 @app.get("/health")
-async def health_check():
+async def health():
     """Health check"""
     return {
         "status": "healthy",
@@ -98,148 +131,257 @@ async def health_check():
 @app.post("/api/analyze", response_model=JobResponse)
 async def submit_analysis(request: AnalysisRequest):
     """
-    Submit a video URL for analysis
+    Submit a video URL for complete analysis
     
-    This endpoint queues a video for background processing using Celery.
-    Returns a job_id that can be used to track progress.
-    
-    - **url**: Video URL (YouTube, Vimeo, etc.)
-    - **priority**: Priority level 1-10 (higher = more priority)
-    - **force_reanalyze**: Re-analyze even if already processed
+    This will:
+    - Download the video
+    - Extract frames and audio
+    - Detect shots and classify style
+    - Transcribe audio
+    - Analyze narrative with Gemini AI
+    - Track characters
+    - Save everything to database
     """
     try:
-        logger.info(f"📥 Received analysis request for: {request.url}")
+        logger.info(f"📥 Analysis request: {request.url}")
         
-        # Import Celery task
-        from backend.tasks.video_tasks import analyze_video
+        db_ops = DatabaseOperations(database)
         
-        # Queue the task (placeholder - will be replaced with real analysis)
-        task = analyze_video.delay(
-            video_id=0,  # Will be replaced with actual DB ID
-            video_path=str(request.url)
+        # Check if already analyzed
+        if not request.force_reanalyze:
+            existing = await database.fetch_one(
+                "SELECT id FROM films WHERE url = $1",
+                str(request.url)
+            )
+            if existing:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"URL already analyzed. Film ID: {existing['id']}"
+                )
+        
+        # Create job
+        job_id = await db_ops.create_job(str(request.url), request.priority)
+        
+        # Queue Celery task
+        from backend.tasks.video_tasks import analyze_film_complete
+        
+        task = analyze_film_complete.delay(job_id, str(request.url))
+        
+        # Update job with Celery task ID
+        await db_ops.update_job_status(
+            job_id,
+            status='queued',
+            celery_task_id=task.id
         )
         
-        logger.info(f"✅ Task queued with ID: {task.id}")
+        logger.info(f"✅ Job {job_id} queued (task: {task.id})")
         
         return JobResponse(
-            job_id=task.id,
+            job_id=job_id,
             status="queued",
             url=str(request.url),
             priority=request.priority,
-            created_at=datetime.now().isoformat(),
-            message="Video analysis queued successfully. Use job_id to track progress."
+            progress=0.0,
+            created_at=datetime.now()
         )
         
-    except ImportError as e:
-        logger.error(f"❌ Celery import error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Background task system not available. Check worker logs."
-        )
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"❌ Error queuing task: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to queue analysis: {str(e)}")
+        logger.error(f"Failed to queue analysis: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/analyze/full")
-async def submit_full_analysis(request: AnalysisRequest):
+
+@app.get("/api/jobs/{job_id}", response_model=JobResponse)
+async def get_job_status(job_id: int):
     """
-    Submit video for FULL analysis (download + frames + audio + AI)
+    Get analysis job status
+    
+    Returns current progress and status of the analysis job.
     """
     try:
-        logger.info(f"📥 Full analysis request for: {request.url}")
+        job = await database.fetch_one(
+            "SELECT * FROM analysis_jobs WHERE id = $1",
+            job_id
+        )
         
-        from backend.tasks.video_tasks import analyze_video_full
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
         
-        task = analyze_video_full.delay(str(request.url))
+        return JobResponse(
+            job_id=job['id'],
+            status=job['status'],
+            url=job['url'],
+            priority=job['priority'],
+            progress=job['progress'],
+            current_stage=job['current_stage'],
+            film_id=job['film_id'],
+            error_message=job['error_message'],
+            created_at=job['created_at']
+        )
         
-        logger.info(f"✅ Full analysis queued: {task.id}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/films", response_model=List[FilmSummary])
+async def list_films(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100)
+):
+    """
+    List all analyzed films
+    """
+    try:
+        query = """
+            SELECT id, title, duration, url, analyzed_at,
+                   metadata->>'style_fingerprint' as style_fingerprint
+            FROM films
+            WHERE analyzed_at IS NOT NULL
+            ORDER BY analyzed_at DESC
+            LIMIT $1 OFFSET $2
+        """
+        
+        films = await database.fetch_all(query, limit, skip)
+        
+        return [FilmSummary(**dict(film)) for film in films]
+        
+    except Exception as e:
+        logger.error(f"Error listing films: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/films/{film_id}")
+async def get_film(film_id: int):
+    """
+    Get complete film analysis
+    
+    Returns all analysis data including:
+    - Video metadata
+    - Shots and cinematography
+    - Visual style and colors
+    - Narrative analysis
+    - Transcript
+    - Characters
+    - Scenes
+    """
+    try:
+        # Get film
+        film = await database.fetch_one(
+            "SELECT * FROM films WHERE id = $1",
+            film_id
+        )
+        
+        if not film:
+            raise HTTPException(status_code=404, detail="Film not found")
+        
+        # Get related data
+        narrative = await database.fetch_one(
+            "SELECT * FROM narratives WHERE film_id = $1",
+            film_id
+        )
+        
+        transcript = await database.fetch_one(
+            "SELECT * FROM transcripts WHERE film_id = $1",
+            film_id
+        )
+        
+        audio = await database.fetch_one(
+            "SELECT * FROM audio_features WHERE film_id = $1",
+            film_id
+        )
+        
+        shots = await database.fetch_all(
+            "SELECT * FROM shots WHERE film_id = $1 ORDER BY shot_number",
+            film_id
+        )
+        
+        characters = await database.fetch_all(
+            "SELECT * FROM characters WHERE film_id = $1 ORDER BY screen_time DESC",
+            film_id
+        )
+        
+        scenes = await database.fetch_all(
+            "SELECT * FROM scenes WHERE film_id = $1 ORDER BY scene_number",
+            film_id
+        )
         
         return {
-            "job_id": task.id,
-            "status": "queued",
-            "url": str(request.url),
-            "priority": request.priority,
-            "created_at": datetime.now().isoformat(),
-            "message": "Full video analysis started. This may take several minutes.",
-            "check_status": f"/api/jobs/{task.id}"
+            **dict(film),
+            'narrative': dict(narrative) if narrative else None,
+            'transcript': dict(transcript) if transcript else None,
+            'audio_features': dict(audio) if audio else None,
+            'shots': [dict(s) for s in shots],
+            'characters': [dict(c) for c in characters],
+            'scenes': [dict(s) for s in scenes],
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"❌ Error: {e}")
+        logger.error(f"Error fetching film: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/jobs/{job_id}")
-async def get_job_status(job_id: str):
+
+@app.get("/api/films/{film_id}/similar")
+async def find_similar(
+    film_id: int,
+    similarity_type: str = Query("combined", regex="^(visual|narrative|audio|combined)$"),
+    limit: int = Query(10, ge=1, le=50)
+):
     """
-    Get the status of an analysis job
+    Find similar films using vector similarity
     
-    Returns the current status and results (if completed) of a background task.
-    
-    **Possible statuses:**
-    - PENDING: Task is waiting to be executed
-    - PROGRESS: Task is currently running
-    - SUCCESS: Task completed successfully
-    - FAILURE: Task failed with error
+    Types:
+    - visual: Based on visual style (CLIP embeddings)
+    - narrative: Based on story/themes (text embeddings)
+    - audio: Based on audio features
+    - combined: All of the above
     """
     try:
-        from celery.result import AsyncResult
+        db_ops = DatabaseOperations(database)
         
-        task = AsyncResult(job_id)
-        
-        response = {
-            "job_id": job_id,
-            "status": task.state,
-        }
-        
-        if task.state == "PENDING":
-            response["message"] = "Task is waiting in queue"
-        elif task.state == "PROGRESS":
-            response["progress"] = task.info
-            response["message"] = "Task is processing"
-        elif task.state == "SUCCESS":
-            response["result"] = task.result
-            response["message"] = "Task completed successfully"
-        elif task.state == "FAILURE":
-            response["error"] = str(task.info)
-            response["message"] = "Task failed"
-        else:
-            response["info"] = str(task.info) if task.info else None
-        
-        return response
-        
-    except ImportError:
-        raise HTTPException(
-            status_code=500,
-            detail="Background task system not available"
+        similar = await db_ops.find_similar_films(
+            film_id,
+            similarity_type,
+            limit
         )
+        
+        return similar
+        
     except Exception as e:
-        logger.error(f"❌ Error fetching job status: {e}")
+        logger.error(f"Error finding similar films: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/test")
-async def test_celery():
-    """
-    Test endpoint to verify Celery is working
-    
-    Runs a simple test task and returns the result.
-    """
+@app.get("/api/stats")
+async def get_stats():
+    """Get platform statistics"""
     try:
-        from backend.tasks.video_tasks import test_task
-        
-        task = test_task.delay("Hello from API!")
+        stats = await database.fetch_one("""
+            SELECT 
+                COUNT(*) as total_films,
+                SUM(duration) as total_duration,
+                COUNT(*) FILTER (WHERE analyzed_at > NOW() - INTERVAL '7 days') as recent_films,
+                (SELECT COUNT(*) FROM analysis_jobs WHERE status = 'pending') as pending_jobs,
+                (SELECT COUNT(*) FROM analysis_jobs WHERE status = 'processing') as processing_jobs
+            FROM films
+        """)
         
         return {
-            "status": "success",
-            "message": "Test task queued",
-            "task_id": task.id,
-            "instructions": f"Check status at: /api/jobs/{task.id}"
+            "total_films": stats['total_films'],
+            "total_duration_hours": round(stats['total_duration'] / 3600, 2) if stats['total_duration'] else 0,
+            "recent_films": stats['recent_films'],
+            "pending_jobs": stats['pending_jobs'],
+            "processing_jobs": stats['processing_jobs']
         }
         
     except Exception as e:
-        logger.error(f"❌ Test failed: {e}")
+        logger.error(f"Error fetching stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 if __name__ == "__main__":

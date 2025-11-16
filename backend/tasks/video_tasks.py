@@ -1,8 +1,7 @@
 """
-Video analysis tasks for Celery - FULL VERSION
+Complete Video Analysis Tasks with Full Integration
 """
 import os
-import time
 import logging
 from celery import Task
 from backend.tasks.celery_app import app
@@ -20,157 +19,133 @@ class CallbackTask(Task):
         logger.error(f"❌ Task {task_id} failed: {exc}")
 
 
-@app.task(base=CallbackTask, bind=True, name="backend.tasks.video_tasks.analyze_video_full")
-def analyze_video_full(self, url: str):
+@app.task(base=CallbackTask, bind=True, name="backend.tasks.video_tasks.analyze_film_complete")
+def analyze_film_complete(self, job_id: int, url: str):
     """
-    Full video analysis pipeline
+    Complete film analysis with all modules
     
-    Steps:
+    This is the main task that orchestrates the entire analysis pipeline:
     1. Download video
-    2. Extract frames
-    3. Extract audio
-    4. Transcribe audio
-    5. Analyze narrative
-    6. Detect shots
-    7. Save to database
+    2. Extract frames & audio
+    3. Detect shots & extract keyframes
+    4. Classify visual style
+    5. Transcribe audio
+    6. Analyze narrative with Gemini
+    7. Track characters
+    8. Detect scenes
+    9. Save everything to database
     
     Args:
+        job_id: Analysis job ID
         url: Video URL
-    
+        
     Returns:
-        dict: Complete analysis results
+        dict: Complete analysis results with film_id
     """
     try:
-        import uuid
-        from backend.core.video_processor import VideoProcessor
+        import asyncio
+        from backend.core.full_analysis_pipeline import FullAnalysisPipeline
+        from backend.database.connection import database
+        from backend.database.database_operations import DatabaseOperations
         
-        video_id = str(uuid.uuid4())[:8]
+        logger.info(f"🎬 Starting complete analysis for job {job_id}")
         
-        # Initialize
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 0, "total": 100, "status": "Initializing..."}
+        # Initialize pipeline
+        pipeline = FullAnalysisPipeline()
+        
+        # Progress callback
+        def update_progress(progress: float, status: str):
+            self.update_state(
+                state="PROGRESS",
+                meta={
+                    'current': int(progress * 100),
+                    'total': 100,
+                    'status': status,
+                    'job_id': job_id
+                }
+            )
+        
+        # Update job status to processing
+        async def update_job_processing():
+            db_ops = DatabaseOperations(database)
+            await db_ops.update_job_status(
+                job_id,
+                status='processing',
+                progress=0.0,
+                current_stage='Starting analysis...',
+                celery_task_id=self.request.id
+            )
+        
+        asyncio.run(update_job_processing())
+        
+        # Run analysis pipeline
+        analysis_result = asyncio.run(
+            pipeline.analyze_film(url, job_id, update_progress)
         )
         
-        processor = VideoProcessor()
+        # Save to database
+        async def save_to_database():
+            db_ops = DatabaseOperations(database)
+            
+            # Create film record
+            film_id = await db_ops.create_film(analysis_result)
+            
+            # Update job status
+            await db_ops.update_job_status(
+                job_id,
+                status='completed',
+                progress=1.0,
+                current_stage='Complete',
+                film_id=film_id
+            )
+            
+            return film_id
         
-        # Step 1: Download video (0-20%)
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 5, "total": 100, "status": "📥 Downloading video..."}
-        )
+        film_id = asyncio.run(save_to_database())
         
-        video_info = processor.download_video(url, video_id)
+        logger.info(f"✅ Analysis complete - Film ID: {film_id}")
         
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 20, "total": 100, "status": f"✅ Downloaded: {video_info['title']}"}
-        )
-        
-        # Step 2: Extract frames (20-40%)
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 25, "total": 100, "status": "🎞️ Extracting frames..."}
-        )
-        
-        frames_info = processor.extract_frames(
-            video_info['video_path'],
-            video_id,
-            fps=1.0  # 1 frame per second
-        )
-        
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 40, "total": 100, "status": f"✅ Extracted {frames_info['total_extracted']} frames"}
-        )
-        
-        # Step 3: Extract audio (40-50%)
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 45, "total": 100, "status": "🎵 Extracting audio..."}
-        )
-        
-        audio_path = processor.extract_audio(video_info['video_path'], video_id)
-        
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 50, "total": 100, "status": "✅ Audio extracted"}
-        )
-        
-        # Step 4: Transcribe (50-70%) - Optional for now
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 60, "total": 100, "status": "🎤 Transcribing audio..."}
-        )
-        
-        # TODO: Add Whisper transcription
-        transcript = "(Transcription will be added)"
-        
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 70, "total": 100, "status": "✅ Transcription complete"}
-        )
-        
-        # Step 5: Analyze narrative (70-90%) - Optional for now
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 80, "total": 100, "status": "🤖 Analyzing narrative..."}
-        )
-        
-        # TODO: Add Gemini analysis
-        narrative = {
-            "logline": "Analysis will be added",
-            "themes": [],
-            "genre": ["unknown"]
+        return {
+            'job_id': job_id,
+            'film_id': film_id,
+            'status': 'completed',
+            'title': analysis_result['title'],
+            'duration': analysis_result['duration'],
+            'total_shots': analysis_result['total_shots'],
+            'total_characters': analysis_result['total_characters'],
+            'style': analysis_result.get('style_fingerprint'),
         }
-        
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 90, "total": 100, "status": "✅ Narrative analyzed"}
-        )
-        
-        # Step 6: Finalize (90-100%)
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 95, "total": 100, "status": "💾 Saving results..."}
-        )
-        
-        result = {
-            "video_id": video_id,
-            "url": url,
-            "status": "completed",
-            "video_info": {
-                "title": video_info['title'],
-                "duration": video_info['duration'],
-                "uploader": video_info['uploader'],
-                "resolution": f"{video_info.get('width', 0)}x{video_info.get('height', 0)}",
-            },
-            "analysis": {
-                "frames_extracted": frames_info['total_extracted'],
-                "audio_extracted": os.path.exists(audio_path),
-                "transcript_available": False,  # Will be True when Whisper added
-                "narrative_available": False,   # Will be True when Gemini added
-            },
-            "files": {
-                "video_path": video_info['video_path'],
-                "frames_dir": frames_info['output_dir'],
-                "audio_path": audio_path,
-            }
-        }
-        
-        logger.info(f"✅ Analysis complete for: {video_info['title']}")
-        
-        return result
         
     except Exception as e:
-        logger.error(f"❌ Analysis failed: {e}")
+        logger.error(f"❌ Analysis failed: {e}", exc_info=True)
+        
+        # Update job status to failed
+        async def update_job_failed():
+            from backend.database.connection import database
+            from backend.database.database_operations import DatabaseOperations
+            
+            db_ops = DatabaseOperations(database)
+            await db_ops.update_job_status(
+                job_id,
+                status='failed',
+                error_message=str(e)
+            )
+        
+        try:
+            import asyncio
+            asyncio.run(update_job_failed())
+        except:
+            pass
+        
         raise
 
 
 @app.task(base=CallbackTask, bind=True, name="backend.tasks.video_tasks.analyze_video")
 def analyze_video(self, video_id: int, video_path: str):
-    """Simple analyze video (placeholder)"""
+    """Simple analyze video (legacy compatibility)"""
     try:
+        import time
+        
         self.update_state(
             state="PROGRESS",
             meta={"current": 0, "total": 100, "status": "Starting..."}
@@ -200,36 +175,99 @@ def analyze_video(self, video_id: int, video_path: str):
         raise
 
 
-@app.task(name="backend.tasks.video_tasks.extract_frames")
-def extract_frames(video_path: str, fps: int = 1):
-    """Extract frames from video"""
-    logger.info(f"Extracting frames from {video_path} at {fps} FPS")
-    return {
-        "status": "success",
-        "frames_extracted": 150,
-        "output_dir": "/app/data/frames/"
-    }
-
-
-@app.task(name="backend.tasks.video_tasks.analyze_audio")
-def analyze_audio(video_path: str):
-    """Analyze audio from video"""
-    logger.info(f"Analyzing audio from {video_path}")
-    return {
-        "status": "success",
-        "transcription": "Sample transcription...",
-        "language": "en",
-        "duration": 150.5
-    }
+@app.task(base=CallbackTask, bind=True, name="backend.tasks.video_tasks.analyze_video_full")
+def analyze_video_full(self, url: str):
+    """
+    Full video analysis (without database integration)
+    For testing purposes
+    """
+    try:
+        import uuid
+        import asyncio
+        from backend.core.full_analysis_pipeline import FullAnalysisPipeline
+        
+        job_id = int(uuid.uuid4().int % 1000000)
+        
+        # Initialize
+        self.update_state(
+            state="PROGRESS",
+            meta={"current": 0, "total": 100, "status": "Initializing..."}
+        )
+        
+        pipeline = FullAnalysisPipeline()
+        
+        # Progress callback
+        def update_progress(progress: float, status: str):
+            self.update_state(
+                state="PROGRESS",
+                meta={
+                    'current': int(progress * 100),
+                    'total': 100,
+                    'status': status
+                }
+            )
+        
+        # Run analysis
+        result = asyncio.run(
+            pipeline.analyze_film(url, job_id, update_progress)
+        )
+        
+        return {
+            'status': 'completed',
+            'job_id': job_id,
+            'title': result['title'],
+            'duration': result['duration'],
+            'total_shots': result['total_shots'],
+            'style': result.get('style_fingerprint'),
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Analysis failed: {e}")
+        raise
 
 
 @app.task(name="backend.tasks.video_tasks.test_task")
 def test_task(message: str = "Hello from Celery!"):
     """Simple test task"""
+    import time
+    
     logger.info(f"Test task running: {message}")
     time.sleep(2)
+    
     return {
         "status": "success",
         "message": message,
         "timestamp": time.time()
     }
+
+
+@app.task(name="backend.tasks.video_tasks.cleanup_old_files")
+def cleanup_old_files():
+    """
+    Periodic task to cleanup old analysis files
+    Can be scheduled with Celery Beat
+    """
+    import shutil
+    from pathlib import Path
+    from datetime import datetime, timedelta
+    
+    logger.info("🗑️ Running cleanup task...")
+    
+    try:
+        analyses_dir = Path("/app/analyses")
+        cutoff_date = datetime.now() - timedelta(days=7)
+        
+        cleaned = 0
+        for job_dir in analyses_dir.glob("job_*"):
+            # Check directory age
+            if job_dir.stat().st_mtime < cutoff_date.timestamp():
+                shutil.rmtree(job_dir)
+                cleaned += 1
+        
+        logger.info(f"✓ Cleaned {cleaned} old analysis directories")
+        
+        return {"cleaned": cleaned}
+        
+    except Exception as e:
+        logger.error(f"Cleanup failed: {e}")
+        return {"error": str(e)}
