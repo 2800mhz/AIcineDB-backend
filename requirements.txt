@@ -1,11 +1,39 @@
-tensorflow
-transformers
-torch
-flask
-flask-restful
-pandas
-numpy
-scikit-learn
-sentence-transformers
-turkish-nlp
-nltk
+# FastAPI & Web
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+python-dotenv==1.0.0
+httpx==0.25.0
+
+# Database
+psycopg2-binary==2.9.9
+asyncpg==0.29.0
+databases==0.8.0
+sqlalchemy==2.0.23
+pgvector==0.2.3
+
+# Task Queue
+celery==5.3.4
+redis==5.0.1
+flower==2.0.1
+
+# Video Processing
+yt-dlp==2023.11.16
+opencv-python==4.8.1.78
+opencv-python-headless==4.8.1.78
+ffmpeg-python==0.2.0
+scenedetect[opencv]==0.6.3
+
+# Audio Processing
+openai-whisper==20231117
+librosa==0.10.1
+soundfile==0.12.1
+pydub==0.25.1
+
+# AI/ML
+google-generativeai==0.3.1
+sentence-transformers==2.2.2
+transformers==4.35.2
+torch==2.1.1
+pillow==10.1.0
+numpy==1.24.3
