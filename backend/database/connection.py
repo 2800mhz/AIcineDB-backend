@@ -8,7 +8,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://aicine_user:aicine_pass@postgres:5432/aicine")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://aicine_user:aicine_pass@localhost:5432/aicine")
+
 
 database = Database(DATABASE_URL)
 

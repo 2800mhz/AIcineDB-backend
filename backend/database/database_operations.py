@@ -153,11 +153,11 @@ class DatabaseOperations:
         """Create analysis job"""
         query = """
             INSERT INTO analysis_jobs (url, status, priority)
-            VALUES ($1, 'pending', $2)
+            VALUES (:url, 'pending', :priority)
             RETURNING id
         """
-        job_id = await self.db.fetch_val(query, url, priority)
-        return job_id
+        result = await self.db.fetch_one(query, values={"url": url, "priority": priority})
+        return result['id'] if result else None
     
     async def update_job_status(
         self,
