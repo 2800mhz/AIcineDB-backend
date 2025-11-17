@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 from backend.core.video_processor import VideoProcessor
 from backend.analyzers.cinematography.shot_detector import ShotDetector
 from backend.analyzers.cinematography.style_classifier import StyleClassifier
-from backend.analyzers.audio.audio_analyzer import AudioAnalyzer
+from backend.analyzers.audio.audio_analyzer_complete import AudioAnalyzer
 from backend.analyzers.characters.character_tracker import CharacterTracker
 from backend.analyzers.narrative.gemini_analyzer import GeminiNarrativeAnalyzer
 
