@@ -361,9 +361,31 @@ async def find_similar_films(
             
             # Find similar films based on type
             if similarity_type == "visual":
-                query = "SELECT * FROM find_similar_films_visual($1, $2)"
+                query = """
+                    SELECT 
+                        f.id as film_id,
+                        f.title,
+                        1 - (f.visual_embedding <=> ref.visual_embedding) as similarity,
+                        f.metadata->>'style_fingerprint' as style_fingerprint
+                    FROM films f
+                    CROSS JOIN (SELECT visual_embedding FROM films WHERE id = $1) ref
+                    WHERE f.id != $1 AND f.visual_embedding IS NOT NULL
+                    ORDER BY f.visual_embedding <=> ref.visual_embedding
+                    LIMIT $2
+                """
             elif similarity_type == "narrative":
-                query = "SELECT * FROM find_similar_films_text($1, $2)"
+                query = """
+                    SELECT 
+                        f.id as film_id,
+                        f.title,
+                        1 - (f.text_embedding <=> ref.text_embedding) as similarity,
+                        f.metadata->>'style_fingerprint' as style_fingerprint
+                    FROM films f
+                    CROSS JOIN (SELECT text_embedding FROM films WHERE id = $1) ref
+                    WHERE f.id != $1 AND f.text_embedding IS NOT NULL
+                    ORDER BY f.text_embedding <=> ref.text_embedding
+                    LIMIT $2
+                """
             else:  # combined
                 query = """
                     SELECT 
