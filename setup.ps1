@@ -25,48 +25,9 @@ if (Test-Path "docker\Dockerfile.worker") {
 Write-Host "  [OK] Backup complete" -ForegroundColor Green
 Write-Host ""
 
-# Step 2: Update requirements.txt
-Write-Host "[2/5] Updating requirements.txt..." -ForegroundColor Yellow
-$requirements = @'
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pydantic==2.5.0
-python-dotenv==1.0.0
-httpx==0.25.0
-psycopg2-binary==2.9.9
-asyncpg==0.29.0
-databases[postgresql]==0.8.0
-sqlalchemy==1.4.50
-pgvector==0.2.3
-celery==5.3.4
-redis==5.0.1
-flower==2.0.1
-yt-dlp==2023.11.16
-opencv-python-headless==4.8.1.78
-ffmpeg-python==0.2.0
-scenedetect[opencv]==0.6.3
-openai-whisper==20231117
-librosa==0.10.1
-soundfile==0.12.1
-pydub==0.25.1
-numba==0.58.1
-google-generativeai==0.3.1
-sentence-transformers==2.2.2
-transformers==4.35.2
-torch==2.1.1
-torchvision==0.16.1
-pillow==10.1.0
-numpy==1.24.3
-scikit-learn==1.3.2
-face-recognition==1.3.0
-dlib==19.24.2
-tqdm==4.66.1
-python-multipart==0.0.6
-aiofiles==23.2.1
-'@
-
-$requirements | Out-File -FilePath "requirements.txt" -Encoding ASCII -NoNewline
-Write-Host "  [OK] requirements.txt updated" -ForegroundColor Green
+# Step 2: Check requirements.txt
+Write-Host "[2/5] Checking requirements.txt..." -ForegroundColor Yellow
+Write-Host "  ✓ requirements.txt already Windows-optimized (no dlib/face-recognition)" -ForegroundColor Green
 Write-Host ""
 
 # Step 3: Update Dockerfile.api
