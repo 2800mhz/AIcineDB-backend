@@ -142,8 +142,8 @@ async def submit_analysis(request: AnalysisRequest):
         async with get_db() as db:
             # Check if URL already analyzed
             existing = await db.fetch_one(
-                "SELECT id, analyzed_at FROM films WHERE url = $1",
-                str(request.url)
+                "SELECT id, analyzed_at FROM films WHERE url = :url",
+                values={"url": str(request.url)}
             )
             
             if existing and not request.force_reanalyze:
@@ -156,11 +156,10 @@ async def submit_analysis(request: AnalysisRequest):
             job = await db.fetch_one(
                 """
                 INSERT INTO analysis_jobs (url, status, priority)
-                VALUES ($1, 'pending', $2)
+                VALUES (:url, 'pending', :priority)
                 RETURNING *
                 """,
-                str(request.url),
-                request.priority
+                values={"url": str(request.url), "priority": request.priority}
             )
             
             # Queue background task
@@ -189,8 +188,8 @@ async def get_job_status(job_id: int):
     try:
         async with get_db() as db:
             job = await db.fetch_one(
-                "SELECT * FROM analysis_jobs WHERE id = $1",
-                job_id
+                "SELECT * FROM analysis_jobs WHERE id = :job_id",
+                values={"job_id": job_id}
             )
             
             if not job:
@@ -217,18 +216,18 @@ async def list_jobs(
             if status:
                 query = """
                     SELECT * FROM analysis_jobs 
-                    WHERE status = $1
+                    WHERE status = :status
                     ORDER BY created_at DESC
-                    LIMIT $2 OFFSET $3
+                    LIMIT :limit OFFSET :skip
                 """
-                jobs = await db.fetch_all(query, status, limit, skip)
+                jobs = await db.fetch_all(query, values={"status": status, "limit": limit, "skip": skip})
             else:
                 query = """
                     SELECT * FROM analysis_jobs
                     ORDER BY created_at DESC
-                    LIMIT $1 OFFSET $2
+                    LIMIT :limit OFFSET :skip
                 """
-                jobs = await db.fetch_all(query, limit, skip)
+                jobs = await db.fetch_all(query, values={"limit": limit, "skip": skip})
             
             return [AnalysisJobResponse(**dict(job)) for job in jobs]
             
@@ -267,10 +266,10 @@ async def list_films(
                 FROM films
                 WHERE analyzed_at IS NOT NULL
                 ORDER BY {sort_by} DESC
-                LIMIT $1 OFFSET $2
+                LIMIT :limit OFFSET :skip
             """
             
-            films = await db.fetch_all(query, limit, skip)
+            films = await db.fetch_all(query, values={"limit": limit, "skip": skip})
             
             return [FilmSummary(**dict(film)) for film in films]
             
@@ -286,8 +285,8 @@ async def get_film(film_id: int):
         async with get_db() as db:
             # Get film
             film = await db.fetch_one(
-                "SELECT * FROM films WHERE id = $1",
-                film_id
+                "SELECT * FROM films WHERE id = :film_id",
+                values={"film_id": film_id}
             )
             
             if not film:
@@ -295,33 +294,33 @@ async def get_film(film_id: int):
             
             # Get related data
             narrative = await db.fetch_one(
-                "SELECT * FROM narratives WHERE film_id = $1",
-                film_id
+                "SELECT * FROM narratives WHERE film_id = :film_id",
+                values={"film_id": film_id}
             )
             
             transcript = await db.fetch_one(
-                "SELECT * FROM transcripts WHERE film_id = $1",
-                film_id
+                "SELECT * FROM transcripts WHERE film_id = :film_id",
+                values={"film_id": film_id}
             )
             
             audio = await db.fetch_one(
-                "SELECT * FROM audio_features WHERE film_id = $1",
-                film_id
+                "SELECT * FROM audio_features WHERE film_id = :film_id",
+                values={"film_id": film_id}
             )
             
             shots = await db.fetch_all(
-                "SELECT * FROM shots WHERE film_id = $1 ORDER BY shot_number",
-                film_id
+                "SELECT * FROM shots WHERE film_id = :film_id ORDER BY shot_number",
+                values={"film_id": film_id}
             )
             
             characters = await db.fetch_all(
-                "SELECT * FROM characters WHERE film_id = $1 ORDER BY screen_time DESC",
-                film_id
+                "SELECT * FROM characters WHERE film_id = :film_id ORDER BY screen_time DESC",
+                values={"film_id": film_id}
             )
             
             scenes = await db.fetch_all(
-                "SELECT * FROM scenes WHERE film_id = $1 ORDER BY scene_number",
-                film_id
+                "SELECT * FROM scenes WHERE film_id = :film_id ORDER BY scene_number",
+                values={"film_id": film_id}
             )
             
             return FilmDetail(
@@ -352,8 +351,8 @@ async def find_similar_films(
         async with get_db() as db:
             # Check if film exists
             film = await db.fetch_one(
-                "SELECT id FROM films WHERE id = $1",
-                film_id
+                "SELECT id FROM films WHERE id = :film_id",
+                values={"film_id": film_id}
             )
             
             if not film:
@@ -368,10 +367,10 @@ async def find_similar_films(
                         1 - (f.visual_embedding <=> ref.visual_embedding) as similarity,
                         f.metadata->>'style_fingerprint' as style_fingerprint
                     FROM films f
-                    CROSS JOIN (SELECT visual_embedding FROM films WHERE id = $1) ref
-                    WHERE f.id != $1 AND f.visual_embedding IS NOT NULL
+                    CROSS JOIN (SELECT visual_embedding FROM films WHERE id = :film_id) ref
+                    WHERE f.id != :film_id AND f.visual_embedding IS NOT NULL
                     ORDER BY f.visual_embedding <=> ref.visual_embedding
-                    LIMIT $2
+                    LIMIT :limit
                 """
             elif similarity_type == "narrative":
                 query = """
@@ -381,10 +380,10 @@ async def find_similar_films(
                         1 - (f.text_embedding <=> ref.text_embedding) as similarity,
                         f.metadata->>'style_fingerprint' as style_fingerprint
                     FROM films f
-                    CROSS JOIN (SELECT text_embedding FROM films WHERE id = $1) ref
-                    WHERE f.id != $1 AND f.text_embedding IS NOT NULL
+                    CROSS JOIN (SELECT text_embedding FROM films WHERE id = :film_id) ref
+                    WHERE f.id != :film_id AND f.text_embedding IS NOT NULL
                     ORDER BY f.text_embedding <=> ref.text_embedding
-                    LIMIT $2
+                    LIMIT :limit
                 """
             else:  # combined
                 query = """
@@ -398,15 +397,15 @@ async def find_similar_films(
                         ) / 3.0 as similarity,
                         f.metadata->>'style_fingerprint' as style_fingerprint
                     FROM films f
-                    CROSS JOIN (SELECT * FROM films WHERE id = $1) ref
-                    WHERE f.id != $1
+                    CROSS JOIN (SELECT * FROM films WHERE id = :film_id) ref
+                    WHERE f.id != :film_id
                         AND f.visual_embedding IS NOT NULL
                         AND f.text_embedding IS NOT NULL
                     ORDER BY similarity DESC
-                    LIMIT $2
+                    LIMIT :limit
                 """
             
-            similar = await db.fetch_all(query, film_id, limit)
+            similar = await db.fetch_all(query, values={"film_id": film_id, "limit": limit})
             
             return [SimilarFilm(**dict(s)) for s in similar]
             
@@ -426,41 +425,36 @@ async def search_films(
     try:
         async with get_db() as db:
             conditions = ["analyzed_at IS NOT NULL"]
-            params = []
-            param_idx = 1
+            params = {}
             
             if filters.theme:
-                conditions.append(f"""
+                conditions.append("""
                     EXISTS (
                         SELECT 1 FROM jsonb_array_elements(metadata->'narrative'->'themes') as theme
-                        WHERE theme->>'name' ILIKE ${param_idx}
+                        WHERE theme->>'name' ILIKE :theme
                     )
                 """)
-                params.append(f"%{filters.theme}%")
-                param_idx += 1
+                params['theme'] = f"%{filters.theme}%"
             
             if filters.min_duration:
-                conditions.append(f"duration >= ${param_idx}")
-                params.append(filters.min_duration)
-                param_idx += 1
+                conditions.append("duration >= :min_duration")
+                params['min_duration'] = filters.min_duration
             
             if filters.max_duration:
-                conditions.append(f"duration <= ${param_idx}")
-                params.append(filters.max_duration)
-                param_idx += 1
+                conditions.append("duration <= :max_duration")
+                params['max_duration'] = filters.max_duration
             
             if filters.mood:
-                conditions.append(f"""
+                conditions.append("""
                     EXISTS (
                         SELECT 1 FROM audio_features
-                        WHERE film_id = films.id AND mood = ${param_idx}
+                        WHERE film_id = films.id AND mood = :mood
                     )
                 """)
-                params.append(filters.mood)
-                param_idx += 1
+                params['mood'] = filters.mood
             
             where_clause = " AND ".join(conditions)
-            params.append(limit)
+            params['limit'] = limit
             
             query = f"""
                 SELECT 
@@ -475,10 +469,10 @@ async def search_films(
                 FROM films
                 WHERE {where_clause}
                 ORDER BY analyzed_at DESC
-                LIMIT ${param_idx}
+                LIMIT :limit
             """
             
-            films = await db.fetch_all(query, *params)
+            films = await db.fetch_all(query, values=params)
             
             return [FilmSummary(**dict(f)) for f in films]
             
