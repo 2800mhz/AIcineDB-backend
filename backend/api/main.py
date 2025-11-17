@@ -150,8 +150,8 @@ async def submit_analysis(request: AnalysisRequest):
         # Check if already analyzed
         if not request.force_reanalyze:
             existing = await database.fetch_one(
-                "SELECT id FROM films WHERE url = $1",
-                str(request.url)
+                "SELECT id FROM films WHERE url = :url",
+                values={"url": str(request.url)}
             )
             if existing:
                 raise HTTPException(
@@ -201,8 +201,8 @@ async def get_job_status(job_id: int):
     """
     try:
         job = await database.fetch_one(
-            "SELECT * FROM analysis_jobs WHERE id = $1",
-            job_id
+            "SELECT * FROM analysis_jobs WHERE id = :job_id",
+            values={"job_id": job_id}
         )
         
         if not job:
@@ -242,10 +242,10 @@ async def list_films(
             FROM films
             WHERE analyzed_at IS NOT NULL
             ORDER BY analyzed_at DESC
-            LIMIT $1 OFFSET $2
+            LIMIT :limit OFFSET :skip
         """
         
-        films = await database.fetch_all(query, limit, skip)
+        films = await database.fetch_all(query, values={"limit": limit, "skip": skip})
         
         return [FilmSummary(**dict(film)) for film in films]
         
@@ -271,8 +271,8 @@ async def get_film(film_id: int):
     try:
         # Get film
         film = await database.fetch_one(
-            "SELECT * FROM films WHERE id = $1",
-            film_id
+            "SELECT * FROM films WHERE id = :film_id",
+            values={"film_id": film_id}
         )
         
         if not film:
@@ -280,33 +280,33 @@ async def get_film(film_id: int):
         
         # Get related data
         narrative = await database.fetch_one(
-            "SELECT * FROM narratives WHERE film_id = $1",
-            film_id
+            "SELECT * FROM narratives WHERE film_id = :film_id",
+            values={"film_id": film_id}
         )
         
         transcript = await database.fetch_one(
-            "SELECT * FROM transcripts WHERE film_id = $1",
-            film_id
+            "SELECT * FROM transcripts WHERE film_id = :film_id",
+            values={"film_id": film_id}
         )
         
         audio = await database.fetch_one(
-            "SELECT * FROM audio_features WHERE film_id = $1",
-            film_id
+            "SELECT * FROM audio_features WHERE film_id = :film_id",
+            values={"film_id": film_id}
         )
         
         shots = await database.fetch_all(
-            "SELECT * FROM shots WHERE film_id = $1 ORDER BY shot_number",
-            film_id
+            "SELECT * FROM shots WHERE film_id = :film_id ORDER BY shot_number",
+            values={"film_id": film_id}
         )
         
         characters = await database.fetch_all(
-            "SELECT * FROM characters WHERE film_id = $1 ORDER BY screen_time DESC",
-            film_id
+            "SELECT * FROM characters WHERE film_id = :film_id ORDER BY screen_time DESC",
+            values={"film_id": film_id}
         )
         
         scenes = await database.fetch_all(
-            "SELECT * FROM scenes WHERE film_id = $1 ORDER BY scene_number",
-            film_id
+            "SELECT * FROM scenes WHERE film_id = :film_id ORDER BY scene_number",
+            values={"film_id": film_id}
         )
         
         return {
