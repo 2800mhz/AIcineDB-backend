@@ -3,6 +3,7 @@ Complete Video Analysis Tasks with Full Integration
 """
 import os
 import logging
+import asyncio
 from celery import Task
 from backend.tasks.celery_app import app
 
@@ -42,20 +43,63 @@ def analyze_film_complete(self, job_id: int, url: str):
     Returns:
         dict: Complete analysis results with film_id
     """
+    
+    # Create new event loop for this task
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     try:
-        import asyncio
-        from backend.core.full_analysis_pipeline import FullAnalysisPipeline
-        from backend.database.connection import database
-        from backend.database.database_operations import DatabaseOperations
+        result = loop.run_until_complete(_run_analysis(self, job_id, url))
+        return result
+    except Exception as e:
+        logger.error(f"❌ Analysis failed: {e}", exc_info=True)
         
-        logger.info(f"🎬 Starting complete analysis for job {job_id}")
+        # Try to update job status to failed
+        try:
+            loop.run_until_complete(_update_job_failed(job_id, str(e)))
+        except Exception as db_error:
+            logger.error(f"Failed to update job status: {db_error}")
+        
+        raise e
+    finally:
+        # Clean up event loop
+        try:
+            loop.close()
+            logger.info("🔄 Event loop closed")
+        except Exception as e:
+            logger.warning(f"Event loop close warning: {e}")
+
+
+async def _run_analysis(task_self, job_id: int, url: str):
+    """
+    Internal async function that runs the actual analysis.
+    This runs in a fresh event loop created by the task.
+    """
+    from backend.core.full_analysis_pipeline import FullAnalysisPipeline
+    from backend.database.connection import get_task_db
+    from backend.database.database_operations import DatabaseOperations
+    
+    logger.info(f"🎬 Starting complete analysis for job {job_id}")
+    
+    # Use context manager for database connection
+    async with get_task_db() as db:
+        db_ops = DatabaseOperations(db)
+        
+        # Update job status to processing
+        await db_ops.update_job_status(
+            job_id,
+            status='processing',
+            progress=0.0,
+            current_stage='Starting analysis...',
+            celery_task_id=task_self.request.id
+        )
         
         # Initialize pipeline
         pipeline = FullAnalysisPipeline()
         
         # Progress callback
         def update_progress(progress: float, status: str):
-            self.update_state(
+            task_self.update_state(
                 state="PROGRESS",
                 meta={
                     'current': int(progress * 100),
@@ -64,44 +108,24 @@ def analyze_film_complete(self, job_id: int, url: str):
                     'job_id': job_id
                 }
             )
-        
-        # Update job status to processing
-        async def update_job_processing():
-            db_ops = DatabaseOperations(database)
-            await db_ops.update_job_status(
-                job_id,
-                status='processing',
-                progress=0.0,
-                current_stage='Starting analysis...',
-                celery_task_id=self.request.id
-            )
-        
-        asyncio.run(update_job_processing())
+            logger.info(f"📊 Progress: {int(progress * 100)}% - {status}")
         
         # Run analysis pipeline
-        analysis_result = asyncio.run(
-            pipeline.analyze_film(url, job_id, update_progress)
+        logger.info(f"🎥 Analyzing video: {url}")
+        analysis_result = await pipeline.analyze_film(url, job_id, update_progress)
+        
+        # Create film record
+        logger.info(f"💾 Saving analysis results to database...")
+        film_id = await db_ops.create_film(analysis_result)
+        
+        # Update job status to completed
+        await db_ops.update_job_status(
+            job_id,
+            status='completed',
+            progress=1.0,
+            current_stage='Complete',
+            film_id=film_id
         )
-        
-        # Save to database
-        async def save_to_database():
-            db_ops = DatabaseOperations(database)
-            
-            # Create film record
-            film_id = await db_ops.create_film(analysis_result)
-            
-            # Update job status
-            await db_ops.update_job_status(
-                job_id,
-                status='completed',
-                progress=1.0,
-                current_stage='Complete',
-                film_id=film_id
-            )
-            
-            return film_id
-        
-        film_id = asyncio.run(save_to_database())
         
         logger.info(f"✅ Analysis complete - Film ID: {film_id}")
         
@@ -109,165 +133,59 @@ def analyze_film_complete(self, job_id: int, url: str):
             'job_id': job_id,
             'film_id': film_id,
             'status': 'completed',
-            'title': analysis_result['title'],
-            'duration': analysis_result['duration'],
-            'total_shots': analysis_result['total_shots'],
-            'total_characters': analysis_result['total_characters'],
+            'title': analysis_result.get('title', 'Unknown'),
+            'duration': analysis_result.get('duration', 0),
+            'total_shots': analysis_result.get('total_shots', 0),
+            'total_characters': analysis_result.get('total_characters', 0),
             'style': analysis_result.get('style_fingerprint'),
         }
-        
-    except Exception as e:
-        logger.error(f"❌ Analysis failed: {e}", exc_info=True)
-        
-        # Update job status to failed
-        async def update_job_failed():
-            from backend.database.connection import database
-            from backend.database.database_operations import DatabaseOperations
-            
-            db_ops = DatabaseOperations(database)
-            await db_ops.update_job_status(
-                job_id,
-                status='failed',
-                error_message=str(e)
-            )
-        
-        try:
-            import asyncio
-            asyncio.run(update_job_failed())
-        except:
-            pass
-        
-        raise
 
 
-@app.task(base=CallbackTask, bind=True, name="backend.tasks.video_tasks.analyze_video")
-def analyze_video(self, video_id: int, video_path: str):
-    """Simple analyze video (legacy compatibility)"""
-    try:
-        import time
-        
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 0, "total": 100, "status": "Starting..."}
-        )
-        
-        logger.info(f"Analyzing video {video_id} at {video_path}")
-        
-        for i in range(1, 6):
-            time.sleep(2)
-            self.update_state(
-                state="PROGRESS",
-                meta={"current": i * 20, "total": 100, "status": f"Step {i}/5..."}
-            )
-        
-        return {
-            "video_id": video_id,
-            "status": "completed",
-            "analysis": {
-                "duration": "00:02:30",
-                "frames_analyzed": 150,
-                "scenes_detected": 8,
-                "audio_analyzed": True
-            }
-        }
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        raise
-
-
-@app.task(base=CallbackTask, bind=True, name="backend.tasks.video_tasks.analyze_video_full")
-def analyze_video_full(self, url: str):
+async def _update_job_failed(job_id: int, error_message: str):
     """
-    Full video analysis (without database integration)
-    For testing purposes
+    Update job status to failed.
+    Runs in its own database context.
     """
-    try:
-        import uuid
-        import asyncio
-        from backend.core.full_analysis_pipeline import FullAnalysisPipeline
-        
-        job_id = int(uuid.uuid4().int % 1000000)
-        
-        # Initialize
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": 0, "total": 100, "status": "Initializing..."}
+    from backend.database.connection import get_task_db
+    from backend.database.database_operations import DatabaseOperations
+    
+    async with get_task_db() as db:
+        db_ops = DatabaseOperations(db)
+        await db_ops.update_job_status(
+            job_id,
+            status='failed',
+            progress=0.0,
+            current_stage='Failed',
+            error_message=error_message
         )
-        
-        pipeline = FullAnalysisPipeline()
-        
-        # Progress callback
-        def update_progress(progress: float, status: str):
-            self.update_state(
-                state="PROGRESS",
-                meta={
-                    'current': int(progress * 100),
-                    'total': 100,
-                    'status': status
-                }
-            )
-        
-        # Run analysis
-        result = asyncio.run(
-            pipeline.analyze_film(url, job_id, update_progress)
-        )
-        
-        return {
-            'status': 'completed',
-            'job_id': job_id,
-            'title': result['title'],
-            'duration': result['duration'],
-            'total_shots': result['total_shots'],
-            'style': result.get('style_fingerprint'),
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Analysis failed: {e}")
-        raise
+        logger.info(f"📝 Job {job_id} marked as failed")
 
 
 @app.task(name="backend.tasks.video_tasks.test_task")
-def test_task(message: str = "Hello from Celery!"):
-    """Simple test task"""
-    import time
-    
-    logger.info(f"Test task running: {message}")
-    time.sleep(2)
-    
-    return {
-        "status": "success",
-        "message": message,
-        "timestamp": time.time()
-    }
+def test_task(message: str):
+    """Test task for debugging"""
+    logger.info(f"🧪 Test task received: {message}")
+    return f"Test completed: {message}"
 
 
-@app.task(name="backend.tasks.video_tasks.cleanup_old_files")
-def cleanup_old_files():
-    """
-    Periodic task to cleanup old analysis files
-    Can be scheduled with Celery Beat
-    """
-    import shutil
-    from pathlib import Path
-    from datetime import datetime, timedelta
+@app.task(name="backend.tasks.video_tasks.test_async_task")
+def test_async_task(message: str):
+    """Test async task with database connection"""
     
-    logger.info("🗑️ Running cleanup task...")
+    async def _test():
+        from backend.database.connection import get_task_db
+        
+        async with get_task_db() as db:
+            logger.info(f"🧪 Test async task - DB connected")
+            # You can test a simple query here if needed
+            return f"Async test completed: {message}"
+    
+    # Create new event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
     try:
-        analyses_dir = Path("/app/analyses")
-        cutoff_date = datetime.now() - timedelta(days=7)
-        
-        cleaned = 0
-        for job_dir in analyses_dir.glob("job_*"):
-            # Check directory age
-            if job_dir.stat().st_mtime < cutoff_date.timestamp():
-                shutil.rmtree(job_dir)
-                cleaned += 1
-        
-        logger.info(f"✓ Cleaned {cleaned} old analysis directories")
-        
-        return {"cleaned": cleaned}
-        
-    except Exception as e:
-        logger.error(f"Cleanup failed: {e}")
-        return {"error": str(e)}
+        result = loop.run_until_complete(_test())
+        return result
+    finally:
+        loop.close()

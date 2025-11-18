@@ -1,117 +1,120 @@
 """
-Database Operations for Film Analysis
-CRUD operations for all tables
+Database operations for AIcineDB
 """
 import logging
-from typing import Dict, List, Optional
-from datetime import datetime
+from typing import Dict, List, Optional, Any
 import json
+import numpy as np
+from databases import Database
 
 logger = logging.getLogger(__name__)
 
 
 class DatabaseOperations:
-    """Database CRUD operations"""
+    """Database operations handler"""
     
-    def __init__(self, db):
-        """
-        Args:
-            db: Database connection (from databases library)
-        """
-        self.db = db
+    def __init__(self, database: Database):
+        self.db = database
+    
+    def _prepare_embedding(self, embedding) -> List[float]:
+        """Convert embedding to list format for pgvector"""
+        if embedding is None:
+            return None
+        
+        if isinstance(embedding, np.ndarray):
+            return embedding.tolist()
+        elif isinstance(embedding, list):
+            return embedding
+        else:
+            raise ValueError(f"Unsupported embedding type: {type(embedding)}")
     
     # ============================================================================
     # FILMS
     # ============================================================================
     
     async def create_film(self, analysis_result: Dict) -> int:
-        """
-        Create film record with complete analysis
+        """Create film record from analysis result"""
         
-        Args:
-            analysis_result: Complete analysis result from pipeline
-            
-        Returns:
-            Film ID
-        """
-        try:
-            # Prepare metadata
-            metadata = {
-                'resolution': analysis_result.get('resolution'),
-                'fps': analysis_result.get('fps'),
-                'style_fingerprint': analysis_result.get('style_fingerprint'),
-                'shot_statistics': analysis_result.get('shot_statistics'),
-                'style': analysis_result.get('style'),
-                'color_palette': analysis_result.get('color_palette'),
-            }
-            
-            # Convert embeddings to pgvector format
-            visual_emb = self._prepare_embedding(analysis_result.get('visual_embedding'))
-            text_emb = self._prepare_embedding(analysis_result.get('text_embedding'))
-            audio_emb = self._prepare_embedding(analysis_result.get('audio_embedding'))
-            
-            # Insert film
-            query = """
-                INSERT INTO films (
-                    title, url, duration, uploader,
-                    metadata,
-                    visual_embedding, text_embedding, audio_embedding,
-                    analyzed_at
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-                RETURNING id
-            """
-            
-            film_id = await self.db.fetch_val(
-                query,
-                analysis_result['title'],
-                analysis_result['url'],
-                analysis_result['duration'],
-                analysis_result.get('uploader'),
-                json.dumps(metadata),
-                visual_emb,
-                text_emb,
-                audio_emb
+        # Extract basic metadata
+        metadata = {
+            'uploader': analysis_result.get('uploader'),
+            'upload_date': analysis_result.get('upload_date'),
+            'view_count': analysis_result.get('view_count'),
+            'like_count': analysis_result.get('like_count'),
+            'description': analysis_result.get('description'),
+            'tags': analysis_result.get('tags', [])
+        }
+        
+        # Prepare embeddings
+        visual_emb = self._prepare_embedding(analysis_result.get('visual_embedding'))
+        text_emb = self._prepare_embedding(analysis_result.get('text_embedding'))
+        audio_emb = self._prepare_embedding(analysis_result.get('audio_embedding'))
+        
+        query = """
+            INSERT INTO films (
+                title, url, duration, uploader, upload_date,
+                view_count, like_count, metadata,
+                visual_embedding, text_embedding, audio_embedding,
+                analyzed_at
             )
-            
-            logger.info(f"✓ Created film record: {film_id}")
-            
-            # Create related records
-            await self._create_shots(film_id, analysis_result.get('shots', []))
-            await self._create_characters(film_id, analysis_result.get('characters', []))
-            await self._create_scenes(film_id, analysis_result.get('scenes', []))
-            
-            if analysis_result.get('narrative'):
-                await self._create_narrative(film_id, analysis_result['narrative'])
-            
-            if analysis_result.get('transcript'):
-                await self._create_transcript(film_id, analysis_result['transcript'])
-            
-            if analysis_result.get('audio_features'):
-                await self._create_audio_features(film_id, analysis_result['audio_features'])
-            
-            return film_id
-            
-        except Exception as e:
-            logger.error(f"Failed to create film: {e}")
-            raise
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+            RETURNING id
+        """
+        
+        result = await self.db.fetch_one(
+            query,
+            analysis_result.get('title'),
+            analysis_result.get('url'),
+            analysis_result.get('duration'),
+            metadata.get('uploader'),
+            metadata.get('upload_date'),
+            metadata.get('view_count'),
+            metadata.get('like_count'),
+            json.dumps(metadata),
+            visual_emb,
+            text_emb,
+            audio_emb
+        )
+        
+        film_id = result['id']
+        
+        # Create related records
+        await self._create_shots(film_id, analysis_result.get('shots', []))
+        await self._create_characters(film_id, analysis_result.get('characters', []))
+        await self._create_scenes(film_id, analysis_result.get('scenes', []))
+        await self._create_narrative(film_id, analysis_result.get('narrative', {}))
+        await self._create_transcript(film_id, analysis_result.get('transcript', {}))
+        await self._create_audio_features(film_id, analysis_result.get('audio_features', {}))
+        
+        return film_id
     
-    async def get_film(self, film_id: int) -> Optional[Dict]:
+    async def get_film(self, film_id: int) -> Dict:
         """Get complete film data"""
+        # Get main film record
         query = "SELECT * FROM films WHERE id = $1"
         film = await self.db.fetch_one(query, film_id)
         
         if not film:
             return None
         
-        return dict(film)
+        result = dict(film)
+        
+        # Get related data
+        result['shots'] = await self._get_shots(film_id)
+        result['characters'] = await self._get_characters(film_id)
+        result['scenes'] = await self._get_scenes(film_id)
+        result['narrative'] = await self._get_narrative(film_id)
+        result['transcript'] = await self._get_transcript(film_id)
+        result['audio_features'] = await self._get_audio_features(film_id)
+        
+        return result
     
     async def update_film_embeddings(
         self,
         film_id: int,
-        visual_emb: List = None,
-        text_emb: List = None,
-        audio_emb: List = None
+        visual_emb=None,
+        text_emb=None,
+        audio_emb=None
     ):
         """Update film embeddings"""
         updates = []
@@ -143,13 +146,12 @@ class DatabaseOperations:
             WHERE id = ${param_idx}
         """
         
-        await self.db.execute(query, *params)
+        await self.db.execute(query, params)
     
     # ============================================================================
     # JOBS
     # ============================================================================
     
-    # DOĞRU - Positional parameters ($1, $2) kullanmalı
     async def create_job(self, url: str, priority: int = 5) -> int:
         """Create analysis job"""
         query = """
@@ -213,7 +215,13 @@ class DatabaseOperations:
             WHERE id = $1
         """
         
-        await self.db.execute(query, *params)
+        await self.db.execute(query, params)  # Changed: params yerine *params
+    
+    async def get_job(self, job_id: int) -> Dict:
+        """Get job status"""
+        query = "SELECT * FROM analysis_jobs WHERE id = $1"
+        result = await self.db.fetch_one(query, job_id)
+        return dict(result) if result else None
     
     # ============================================================================
     # RELATED RECORDS
@@ -246,8 +254,6 @@ class DatabaseOperations:
                 shot.get('colors', []),
                 shot.get('keyframe_path')
             )
-        
-        logger.info(f"✓ Created {len(shots)} shot records")
     
     async def _create_characters(self, film_id: int, characters: List[Dict]):
         """Create character records"""
@@ -258,9 +264,9 @@ class DatabaseOperations:
             INSERT INTO characters (
                 film_id, character_id, name, role,
                 screen_time, total_appearances,
-                primary_emotion, confidence
+                primary_emotion, confidence, face_embedding
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         """
         
         for char in characters:
@@ -273,10 +279,9 @@ class DatabaseOperations:
                 char.get('screen_time', 0),
                 char.get('total_appearances', 0),
                 char.get('primary_emotion'),
-                char.get('confidence', 0.7)
+                char.get('confidence'),
+                self._prepare_embedding(char.get('face_embedding'))
             )
-        
-        logger.info(f"✓ Created {len(characters)} character records")
     
     async def _create_scenes(self, film_id: int, scenes: List[Dict]):
         """Create scene records"""
@@ -286,9 +291,9 @@ class DatabaseOperations:
         query = """
             INSERT INTO scenes (
                 film_id, scene_number, start_time, end_time, duration,
-                lighting, description
+                lighting, emotion, pacing, description
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         """
         
         for scene in scenes:
@@ -300,19 +305,20 @@ class DatabaseOperations:
                 scene['end_time'],
                 scene['duration'],
                 scene.get('lighting'),
-                f"Scene with {scene.get('num_shots', 0)} shots"
+                scene.get('emotion'),
+                scene.get('pacing'),
+                scene.get('description')
             )
-        
-        logger.info(f"✓ Created {len(scenes)} scene records")
     
     async def _create_narrative(self, film_id: int, narrative: Dict):
         """Create narrative record"""
+        if not narrative:
+            return
+        
         query = """
             INSERT INTO narratives (
-                film_id, logline, synopsis,
-                themes, genre, tone,
-                conflict_type, emotional_arc,
-                story_beats, act_structure
+                film_id, logline, synopsis, themes, genre, tone,
+                conflict_type, emotional_arc, story_beats, act_structure
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         """
@@ -330,11 +336,12 @@ class DatabaseOperations:
             json.dumps(narrative.get('story_beats', [])),
             json.dumps(narrative.get('act_structure', {}))
         )
-        
-        logger.info("✓ Created narrative record")
     
     async def _create_transcript(self, film_id: int, transcript: Dict):
         """Create transcript record"""
+        if not transcript:
+            return
+        
         query = """
             INSERT INTO transcripts (
                 film_id, text, language, word_count, segments
@@ -347,14 +354,15 @@ class DatabaseOperations:
             film_id,
             transcript.get('text'),
             transcript.get('language'),
-            transcript.get('word_count', 0),
+            transcript.get('word_count'),
             json.dumps(transcript.get('segments', []))
         )
-        
-        logger.info("✓ Created transcript record")
     
-    async def _create_audio_features(self, film_id: int, features: Dict):
+    async def _create_audio_features(self, film_id: int, audio_features: Dict):
         """Create audio features record"""
+        if not audio_features:
+            return
+        
         query = """
             INSERT INTO audio_features (
                 film_id, tempo, mood, intensity, pacing,
@@ -366,81 +374,42 @@ class DatabaseOperations:
         await self.db.execute(
             query,
             film_id,
-            features.get('tempo'),
-            features.get('mood'),
-            features.get('intensity'),
-            features.get('pacing'),
-            features.get('avg_energy'),
-            features.get('spectral_brightness'),
-            features.get('speech_ratio')
+            audio_features.get('tempo'),
+            audio_features.get('mood'),
+            audio_features.get('intensity'),
+            audio_features.get('pacing'),
+            audio_features.get('avg_energy'),
+            audio_features.get('spectral_brightness'),
+            audio_features.get('speech_ratio')
         )
-        
-        logger.info("✓ Created audio features record")
     
-    # ============================================================================
-    # SIMILARITY SEARCH
-    # ============================================================================
+    # Getter methods
+    async def _get_shots(self, film_id: int) -> List[Dict]:
+        query = "SELECT * FROM shots WHERE film_id = $1 ORDER BY shot_number"
+        results = await self.db.fetch_all(query, film_id)
+        return [dict(row) for row in results]
     
-    async def find_similar_films(
-        self,
-        film_id: int,
-        similarity_type: str = "combined",
-        limit: int = 10
-    ) -> List[Dict]:
-        """Find similar films using vector similarity"""
-        
-        if similarity_type == "visual":
-            query = """
-                SELECT 
-                    f.id, f.title,
-                    1 - (f.visual_embedding <=> ref.visual_embedding) as similarity
-                FROM films f
-                CROSS JOIN (SELECT visual_embedding FROM films WHERE id = $1) ref
-                WHERE f.id != $1 AND f.visual_embedding IS NOT NULL
-                ORDER BY f.visual_embedding <=> ref.visual_embedding
-                LIMIT $2
-            """
-        elif similarity_type == "narrative":
-            query = """
-                SELECT 
-                    f.id, f.title,
-                    1 - (f.text_embedding <=> ref.text_embedding) as similarity
-                FROM films f
-                CROSS JOIN (SELECT text_embedding FROM films WHERE id = $1) ref
-                WHERE f.id != $1 AND f.text_embedding IS NOT NULL
-                ORDER BY f.text_embedding <=> ref.text_embedding
-                LIMIT $2
-            """
-        else:  # combined
-            query = """
-                SELECT 
-                    f.id, f.title,
-                    (
-                        COALESCE(1 - (f.visual_embedding <=> ref.visual_embedding), 0) +
-                        COALESCE(1 - (f.text_embedding <=> ref.text_embedding), 0) +
-                        COALESCE(1 - (f.audio_embedding <=> ref.audio_embedding), 0)
-                    ) / 3.0 as similarity
-                FROM films f
-                CROSS JOIN (
-                    SELECT visual_embedding, text_embedding, audio_embedding 
-                    FROM films WHERE id = $1
-                ) ref
-                WHERE f.id != $1
-                ORDER BY similarity DESC
-                LIMIT $2
-            """
-        
-        results = await self.db.fetch_all(query, film_id, limit)
-        return [dict(r) for r in results]
+    async def _get_characters(self, film_id: int) -> List[Dict]:
+        query = "SELECT * FROM characters WHERE film_id = $1"
+        results = await self.db.fetch_all(query, film_id)
+        return [dict(row) for row in results]
     
-    # ============================================================================
-    # HELPERS
-    # ============================================================================
+    async def _get_scenes(self, film_id: int) -> List[Dict]:
+        query = "SELECT * FROM scenes WHERE film_id = $1 ORDER BY scene_number"
+        results = await self.db.fetch_all(query, film_id)
+        return [dict(row) for row in results]
     
-    def _prepare_embedding(self, embedding: List) -> Optional[str]:
-        """Convert embedding list to pgvector format"""
-        if not embedding:
-            return None
-        
-        # pgvector expects string like '[1.0, 2.0, 3.0]'
-        return f"[{','.join(map(str, embedding))}]"
+    async def _get_narrative(self, film_id: int) -> Dict:
+        query = "SELECT * FROM narratives WHERE film_id = $1"
+        result = await self.db.fetch_one(query, film_id)
+        return dict(result) if result else {}
+    
+    async def _get_transcript(self, film_id: int) -> Dict:
+        query = "SELECT * FROM transcripts WHERE film_id = $1"
+        result = await self.db.fetch_one(query, film_id)
+        return dict(result) if result else {}
+    
+    async def _get_audio_features(self, film_id: int) -> Dict:
+        query = "SELECT * FROM audio_features WHERE film_id = $1"
+        result = await self.db.fetch_one(query, film_id)
+        return dict(result) if result else {}

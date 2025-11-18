@@ -141,9 +141,8 @@ async def submit_analysis(request: AnalysisRequest):
     try:
         async with get_db() as db:
             # Check if URL already analyzed
-            # ✅ DOĞRU:
             existing = await db.fetch_one(
-                "SELECT id, analyzed_at FROM films WHERE url = :url",
+                query="SELECT id, analyzed_at FROM films WHERE url = :url",
                 values={"url": str(request.url)}
             )
             
@@ -155,7 +154,7 @@ async def submit_analysis(request: AnalysisRequest):
             
             # Create analysis job
             job = await db.fetch_one(
-                """
+                query="""
                 INSERT INTO analysis_jobs (url, status, priority)
                 VALUES (:url, 'pending', :priority)
                 RETURNING *
@@ -189,7 +188,7 @@ async def get_job_status(job_id: int):
     try:
         async with get_db() as db:
             job = await db.fetch_one(
-                "SELECT * FROM analysis_jobs WHERE id = :job_id",
+                query="SELECT * FROM analysis_jobs WHERE id = :job_id",
                 values={"job_id": job_id}
             )
             
@@ -284,7 +283,7 @@ async def get_film(film_id: int):
         async with get_db() as db:
             # Get film
             film = await db.fetch_one(
-                "SELECT * FROM films WHERE id = :film_id",
+                query="SELECT * FROM films WHERE id = :film_id",
                 values={"film_id": film_id}
             )
             
@@ -293,32 +292,32 @@ async def get_film(film_id: int):
             
             # Get related data
             narrative = await db.fetch_one(
-                "SELECT * FROM narratives WHERE film_id = :film_id",
+                query="SELECT * FROM narratives WHERE film_id = :film_id",
                 values={"film_id": film_id}
             )
             
             transcript = await db.fetch_one(
-                "SELECT * FROM transcripts WHERE film_id = :film_id",
+                query="SELECT * FROM transcripts WHERE film_id = :film_id",
                 values={"film_id": film_id}
             )
             
             audio = await db.fetch_one(
-                "SELECT * FROM audio_features WHERE film_id = :film_id",
+                query="SELECT * FROM audio_features WHERE film_id = :film_id",
                 values={"film_id": film_id}
             )
             
             shots = await db.fetch_all(
-                "SELECT * FROM shots WHERE film_id = :film_id ORDER BY shot_number",
+                query="SELECT * FROM shots WHERE film_id = :film_id ORDER BY shot_number",
                 values={"film_id": film_id}
             )
             
             characters = await db.fetch_all(
-                "SELECT * FROM characters WHERE film_id = :film_id ORDER BY screen_time DESC",
+                query="SELECT * FROM characters WHERE film_id = :film_id ORDER BY screen_time DESC",
                 values={"film_id": film_id}
             )
             
             scenes = await db.fetch_all(
-                "SELECT * FROM scenes WHERE film_id = :film_id ORDER BY scene_number",
+                query="SELECT * FROM scenes WHERE film_id = :film_id ORDER BY scene_number",
                 values={"film_id": film_id}
             )
             
@@ -350,7 +349,7 @@ async def find_similar_films(
         async with get_db() as db:
             # Check if film exists
             film = await db.fetch_one(
-                "SELECT id FROM films WHERE id = :film_id",
+                query="SELECT id FROM films WHERE id = :film_id",
                 values={"film_id": film_id}
             )
             
