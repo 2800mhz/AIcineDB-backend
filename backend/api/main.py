@@ -1,28 +1,47 @@
 """
-AI Cine Analyzer - Complete FastAPI Application
+AI Cine Analyzer - Main FastAPI Application
+Modern film analysis platform with Gemini AI
 """
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, Field
+from typing import List, Optional, Dict, Any
 from datetime import datetime
-from typing import Optional, List
 import logging
 
-from backend.database.connection import database, init_db
-from backend.database.database_operations import DatabaseOperations
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-app = FastAPI(
-    title="AI Cine Analyzer",
-    description="Complete AI-powered film analysis platform",
-    version="2.0.0",
+from backend.database.connection import get_db, init_db
+from backend.tasks.video_tasks import analyze_film_complete
+from backend.models.schemas import (
+    AnalysisRequest,
+    AnalysisJobResponse,
+    FilmSummary,
+    FilmDetail,
+    SimilarFilm,
+    SearchFilters,
+    HealthCheck
 )
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+# Initialize FastAPI
+app = FastAPI(
+    title="AI Cine Analyzer",
+    description="Professional AI-powered film analysis platform with visual, narrative, and audio analysis",
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Configure for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,93 +53,35 @@ app.add_middleware(
 # ============================================================================
 
 @app.on_event("startup")
-async def startup():
-    """Initialize on startup"""
-    logger.info("🚀 AI Cine Analyzer starting...")
+async def startup_event():
+    """Initialize resources on startup"""
+    logger.info("🚀 AI Cine Analyzer starting up...")
+    
     try:
+        # Initialize database
         await init_db()
-        logger.info("✓ Database connected")
+        logger.info("✓ Database initialized")
+        
         logger.info("✓ AI Cine Analyzer ready!")
+        
     except Exception as e:
-        logger.error(f"Startup failed: {e}")
+        logger.error(f"✗ Startup failed: {e}")
+        raise
 
 
 @app.on_event("shutdown")
-async def shutdown():
+async def shutdown_event():
     """Cleanup on shutdown"""
-    logger.info("🛑 Shutting down...")
-    await database.disconnect()
+    logger.info("🛑 AI Cine Analyzer shutting down...")
 
 
 # ============================================================================
-# MODELS
+# HEALTH CHECK
 # ============================================================================
 
-class AnalysisRequest(BaseModel):
-    """Request to analyze a video"""
-    url: HttpUrl
-    priority: int = 5
-    force_reanalyze: bool = False
-
-
-class JobResponse(BaseModel):
-    """Job status response"""
-    job_id: int
-    status: str
-    url: str
-    priority: int
-    progress: float = 0.0
-    current_stage: Optional[str] = None
-    film_id: Optional[int] = None
-    error_message: Optional[str] = None
-    created_at: datetime
-
-
-class FilmSummary(BaseModel):
-    """Film summary"""
-    id: int
-    title: str
-    duration: float
-    url: str
-    analyzed_at: Optional[datetime]
-    style_fingerprint: Optional[str]
-
-
-# ============================================================================
-# ENDPOINTS
-# ============================================================================
-
-@app.get("/")
-async def root():
-    """API root"""
-    return {
-        "name": "AI Cine Analyzer API",
-        "version": "2.0.0",
-        "status": "running",
-        "features": [
-            "🎬 Shot detection & cinematography",
-            "🎨 Visual style classification (CLIP)",
-            "🎤 Audio transcription (Whisper)",
-            "📖 Narrative analysis (Gemini AI)",
-            "🎭 Character tracking & face recognition",
-            "🔍 Vector similarity search",
-            "💾 Complete database storage"
-        ],
-        "endpoints": {
-            "POST /api/analyze": "Submit video for analysis",
-            "GET /api/jobs/{job_id}": "Check job status",
-            "GET /api/films": "List all films",
-            "GET /api/films/{film_id}": "Get film details",
-            "GET /api/films/{film_id}/similar": "Find similar films",
-            "GET /health": "Health check",
-            "GET /docs": "API documentation"
-        }
-    }
-
-
-@app.get("/health")
-async def health():
-    """Health check"""
+@app.get("/health", response_model=HealthCheck)
+async def health_check():
+    """Health check endpoint"""
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
@@ -128,63 +89,87 @@ async def health():
     }
 
 
-@app.post("/api/analyze", response_model=JobResponse)
+@app.get("/", response_model=Dict[str, Any])
+async def root():
+    """API root with documentation"""
+    return {
+        "name": "AI Cine Analyzer API",
+        "version": "2.0.0",
+        "description": "Professional film analysis platform",
+        "features": [
+            "🎬 Cinematography analysis (shots, lighting, color)",
+            "📖 Narrative breakdown with Gemini AI",
+            "🎭 Character tracking & emotion detection",
+            "🎵 Audio mood & pacing analysis",
+            "🎨 Visual style classification",
+            "🔍 Vector-based similarity search",
+            "📊 Complete reports (JSON, HTML, TXT)"
+        ],
+        "endpoints": {
+            "POST /api/analyze": "Submit video for analysis",
+            "GET /api/jobs/{job_id}": "Get analysis job status",
+            "GET /api/films": "List all analyzed films",
+            "GET /api/films/{film_id}": "Get detailed film analysis",
+            "GET /api/films/{film_id}/similar": "Find similar films",
+            "POST /api/search": "Search films by criteria"
+        },
+        "documentation": {
+            "swagger": "/docs",
+            "redoc": "/redoc"
+        }
+    }
+
+
+# ============================================================================
+# ANALYSIS ENDPOINTS
+# ============================================================================
+
+@app.post("/api/analyze", response_model=AnalysisJobResponse, status_code=202)
 async def submit_analysis(request: AnalysisRequest):
     """
-    Submit a video URL for complete analysis
+    Submit a video URL for analysis
     
-    This will:
-    - Download the video
-    - Extract frames and audio
-    - Detect shots and classify style
-    - Transcribe audio
-    - Analyze narrative with Gemini AI
-    - Track characters
-    - Save everything to database
+    Returns job ID for tracking progress
     """
+    logger.info(f"📥 Analysis request: {request.url}")
+    
     try:
-        logger.info(f"📥 Analysis request: {request.url}")
-        
-        db_ops = DatabaseOperations(database)
-        
-        # Check if already analyzed
-        if not request.force_reanalyze:
-            existing = await database.fetch_one(
-                "SELECT id FROM films WHERE url = :url",
+        async with get_db() as db:
+            # Check if URL already analyzed
+            existing = await db.fetch_one(
+                query="SELECT id, analyzed_at FROM films WHERE url = :url",
                 values={"url": str(request.url)}
             )
-            if existing:
+            
+            if existing and not request.force_reanalyze:
                 raise HTTPException(
                     status_code=409,
-                    detail=f"URL already analyzed. Film ID: {existing['id']}"
+                    detail=f"URL already analyzed (film_id: {existing['id']}). Use force_reanalyze=true to re-analyze."
                 )
-        
-        # Create job
-        job_id = await db_ops.create_job(str(request.url), request.priority)
-        
-        # Queue Celery task
-        from backend.tasks.video_tasks import analyze_film_complete
-        
-        task = analyze_film_complete.delay(job_id, str(request.url))
-        
-        # Update job with Celery task ID
-        await db_ops.update_job_status(
-            job_id,
-            status='queued',
-            celery_task_id=task.id
-        )
-        
-        logger.info(f"✅ Job {job_id} queued (task: {task.id})")
-        
-        return JobResponse(
-            job_id=job_id,
-            status="queued",
-            url=str(request.url),
-            priority=request.priority,
-            progress=0.0,
-            created_at=datetime.now()
-        )
-        
+            
+            # Create analysis job
+            job = await db.fetch_one(
+                query="""
+                INSERT INTO analysis_jobs (url, status, priority)
+                VALUES (:url, 'pending', :priority)
+                RETURNING *
+                """,
+                values={"url": str(request.url), "priority": request.priority}
+            )
+            
+            # Queue background task
+            task = analyze_film_complete.delay(job['id'], str(request.url))
+            
+            logger.info(f"📥 Created analysis job {job['id']} for {request.url}")
+            
+            return AnalysisJobResponse(
+                job_id=job['id'],
+                status=job['status'],
+                url=str(request.url),
+                created_at=job['created_at'],
+                celery_task_id=task.id
+            )
+            
     except HTTPException:
         raise
     except Exception as e:
@@ -192,34 +177,21 @@ async def submit_analysis(request: AnalysisRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/jobs/{job_id}", response_model=JobResponse)
+@app.get("/api/jobs/{job_id}")
 async def get_job_status(job_id: int):
-    """
-    Get analysis job status
-    
-    Returns current progress and status of the analysis job.
-    """
+    """Get status of an analysis job"""
     try:
-        job = await database.fetch_one(
-            "SELECT * FROM analysis_jobs WHERE id = :job_id",
-            values={"job_id": job_id}
-        )
-        
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found")
-        
-        return JobResponse(
-            job_id=job['id'],
-            status=job['status'],
-            url=job['url'],
-            priority=job['priority'],
-            progress=job['progress'],
-            current_stage=job['current_stage'],
-            film_id=job['film_id'],
-            error_message=job['error_message'],
-            created_at=job['created_at']
-        )
-        
+        async with get_db() as db:
+            job = await db.fetch_one(
+                query="SELECT * FROM analysis_jobs WHERE id = :job_id",
+                values={"job_id": job_id}
+            )
+            
+            if not job:
+                raise HTTPException(status_code=404, detail="Job not found")
+            
+            return dict(job)
+            
     except HTTPException:
         raise
     except Exception as e:
@@ -227,98 +199,135 @@ async def get_job_status(job_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/films", response_model=List[FilmSummary])
-async def list_films(
+@app.get("/api/jobs", response_model=List[AnalysisJobResponse])
+async def list_jobs(
+    status: Optional[str] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100)
 ):
-    """
-    List all analyzed films
-    """
+    """List analysis jobs with optional status filter"""
     try:
-        query = """
-            SELECT id, title, duration, url, analyzed_at,
-                   metadata->>'style_fingerprint' as style_fingerprint
-            FROM films
-            WHERE analyzed_at IS NOT NULL
-            ORDER BY analyzed_at DESC
-            LIMIT :limit OFFSET :skip
-        """
-        
-        films = await database.fetch_all(query, values={"limit": limit, "skip": skip})
-        
-        return [FilmSummary(**dict(film)) for film in films]
-        
+        async with get_db() as db:
+            if status:
+                query = """
+                    SELECT * FROM analysis_jobs 
+                    WHERE status = :status
+                    ORDER BY created_at DESC
+                    LIMIT :limit OFFSET :skip
+                """
+                jobs = await db.fetch_all(query, values={"status": status, "limit": limit, "skip": skip})
+            else:
+                query = """
+                    SELECT * FROM analysis_jobs
+                    ORDER BY created_at DESC
+                    LIMIT :limit OFFSET :skip
+                """
+                jobs = await db.fetch_all(query, values={"limit": limit, "skip": skip})
+            
+            return [AnalysisJobResponse(**dict(job)) for job in jobs]
+            
+    except Exception as e:
+        logger.error(f"Error listing jobs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# FILM ENDPOINTS
+# ============================================================================
+
+@app.get("/api/films", response_model=List[FilmSummary])
+async def list_films(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    sort_by: str = Query("analyzed_at", regex="^(title|duration|analyzed_at)$")
+):
+    """List all analyzed films"""
+    try:
+        async with get_db() as db:
+            query = f"""
+                SELECT 
+                    id,
+                    title,
+                    duration,
+                    url,
+                    analyzed_at,
+                    metadata->>'style_fingerprint' as style_fingerprint,
+                    COALESCE(
+                        (SELECT json_agg(theme->>'name')
+                         FROM jsonb_array_elements(metadata->'narrative'->'themes') as theme
+                         LIMIT 3),
+                        '[]'::json
+                    ) as themes
+                FROM films
+                WHERE analyzed_at IS NOT NULL
+                ORDER BY {sort_by} DESC
+                LIMIT :limit OFFSET :skip
+            """
+            
+            films = await db.fetch_all(query, values={"limit": limit, "skip": skip})
+            
+            return [FilmSummary(**dict(film)) for film in films]
+            
     except Exception as e:
         logger.error(f"Error listing films: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/films/{film_id}")
+@app.get("/api/films/{film_id}", response_model=FilmDetail)
 async def get_film(film_id: int):
-    """
-    Get complete film analysis
-    
-    Returns all analysis data including:
-    - Video metadata
-    - Shots and cinematography
-    - Visual style and colors
-    - Narrative analysis
-    - Transcript
-    - Characters
-    - Scenes
-    """
+    """Get complete analysis for a film"""
     try:
-        # Get film
-        film = await database.fetch_one(
-            "SELECT * FROM films WHERE id = :film_id",
-            values={"film_id": film_id}
-        )
-        
-        if not film:
-            raise HTTPException(status_code=404, detail="Film not found")
-        
-        # Get related data
-        narrative = await database.fetch_one(
-            "SELECT * FROM narratives WHERE film_id = :film_id",
-            values={"film_id": film_id}
-        )
-        
-        transcript = await database.fetch_one(
-            "SELECT * FROM transcripts WHERE film_id = :film_id",
-            values={"film_id": film_id}
-        )
-        
-        audio = await database.fetch_one(
-            "SELECT * FROM audio_features WHERE film_id = :film_id",
-            values={"film_id": film_id}
-        )
-        
-        shots = await database.fetch_all(
-            "SELECT * FROM shots WHERE film_id = :film_id ORDER BY shot_number",
-            values={"film_id": film_id}
-        )
-        
-        characters = await database.fetch_all(
-            "SELECT * FROM characters WHERE film_id = :film_id ORDER BY screen_time DESC",
-            values={"film_id": film_id}
-        )
-        
-        scenes = await database.fetch_all(
-            "SELECT * FROM scenes WHERE film_id = :film_id ORDER BY scene_number",
-            values={"film_id": film_id}
-        )
-        
-        return {
-            **dict(film),
-            'narrative': dict(narrative) if narrative else None,
-            'transcript': dict(transcript) if transcript else None,
-            'audio_features': dict(audio) if audio else None,
-            'shots': [dict(s) for s in shots],
-            'characters': [dict(c) for c in characters],
-            'scenes': [dict(s) for s in scenes],
-        }
-        
+        async with get_db() as db:
+            # Get film
+            film = await db.fetch_one(
+                query="SELECT * FROM films WHERE id = :film_id",
+                values={"film_id": film_id}
+            )
+            
+            if not film:
+                raise HTTPException(status_code=404, detail="Film not found")
+            
+            # Get related data
+            narrative = await db.fetch_one(
+                query="SELECT * FROM narratives WHERE film_id = :film_id",
+                values={"film_id": film_id}
+            )
+            
+            transcript = await db.fetch_one(
+                query="SELECT * FROM transcripts WHERE film_id = :film_id",
+                values={"film_id": film_id}
+            )
+            
+            audio = await db.fetch_one(
+                query="SELECT * FROM audio_features WHERE film_id = :film_id",
+                values={"film_id": film_id}
+            )
+            
+            shots = await db.fetch_all(
+                query="SELECT * FROM shots WHERE film_id = :film_id ORDER BY shot_number",
+                values={"film_id": film_id}
+            )
+            
+            characters = await db.fetch_all(
+                query="SELECT * FROM characters WHERE film_id = :film_id ORDER BY screen_time DESC",
+                values={"film_id": film_id}
+            )
+            
+            scenes = await db.fetch_all(
+                query="SELECT * FROM scenes WHERE film_id = :film_id ORDER BY scene_number",
+                values={"film_id": film_id}
+            )
+            
+            return FilmDetail(
+                **dict(film),
+                narrative=dict(narrative) if narrative else None,
+                transcript=dict(transcript) if transcript else None,
+                audio_features=dict(audio) if audio else None,
+                shots=[dict(s) for s in shots],
+                characters=[dict(c) for c in characters],
+                scenes=[dict(s) for s in scenes]
+            )
+            
     except HTTPException:
         raise
     except Exception as e:
@@ -326,59 +335,185 @@ async def get_film(film_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/films/{film_id}/similar")
-async def find_similar(
+@app.get("/api/films/{film_id}/similar", response_model=List[SimilarFilm])
+async def find_similar_films(
     film_id: int,
     similarity_type: str = Query("combined", regex="^(visual|narrative|audio|combined)$"),
     limit: int = Query(10, ge=1, le=50)
 ):
-    """
-    Find similar films using vector similarity
-    
-    Types:
-    - visual: Based on visual style (CLIP embeddings)
-    - narrative: Based on story/themes (text embeddings)
-    - audio: Based on audio features
-    - combined: All of the above
-    """
+    """Find films similar to the given film"""
     try:
-        db_ops = DatabaseOperations(database)
-        
-        similar = await db_ops.find_similar_films(
-            film_id,
-            similarity_type,
-            limit
-        )
-        
-        return similar
-        
+        async with get_db() as db:
+            # Check if film exists
+            film = await db.fetch_one(
+                query="SELECT id FROM films WHERE id = :film_id",
+                values={"film_id": film_id}
+            )
+            
+            if not film:
+                raise HTTPException(status_code=404, detail="Film not found")
+            
+            # Find similar films based on type
+            if similarity_type == "visual":
+                query = """
+                    SELECT 
+                        f.id as film_id,
+                        f.title,
+                        1 - (f.visual_embedding <=> ref.visual_embedding) as similarity,
+                        f.metadata->>'style_fingerprint' as style_fingerprint
+                    FROM films f
+                    CROSS JOIN (SELECT visual_embedding FROM films WHERE id = :film_id) ref
+                    WHERE f.id != :film_id AND f.visual_embedding IS NOT NULL
+                    ORDER BY f.visual_embedding <=> ref.visual_embedding
+                    LIMIT :limit
+                """
+                similar = await db.fetch_all(query, values={"film_id": film_id, "limit": limit})
+            elif similarity_type == "narrative":
+                query = """
+                    SELECT 
+                        f.id as film_id,
+                        f.title,
+                        1 - (f.text_embedding <=> ref.text_embedding) as similarity,
+                        f.metadata->>'style_fingerprint' as style_fingerprint
+                    FROM films f
+                    CROSS JOIN (SELECT text_embedding FROM films WHERE id = :film_id) ref
+                    WHERE f.id != :film_id AND f.text_embedding IS NOT NULL
+                    ORDER BY f.text_embedding <=> ref.text_embedding
+                    LIMIT :limit
+                """
+                similar = await db.fetch_all(query, values={"film_id": film_id, "limit": limit})
+            else:  # combined
+                query = """
+                    SELECT 
+                        f.id as film_id,
+                        f.title,
+                        (
+                            (1 - (f.visual_embedding <=> ref.visual_embedding)) +
+                            (1 - (f.text_embedding <=> ref.text_embedding)) +
+                            COALESCE(1 - (f.audio_embedding <=> ref.audio_embedding), 0.5)
+                        ) / 3.0 as similarity,
+                        f.metadata->>'style_fingerprint' as style_fingerprint
+                    FROM films f
+                    CROSS JOIN (SELECT * FROM films WHERE id = :film_id) ref
+                    WHERE f.id != :film_id
+                        AND f.visual_embedding IS NOT NULL
+                        AND f.text_embedding IS NOT NULL
+                    ORDER BY similarity DESC
+                    LIMIT :limit
+                """
+                similar = await db.fetch_all(query, values={"film_id": film_id, "limit": limit})
+            
+            return [SimilarFilm(**dict(s)) for s in similar]
+            
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error finding similar films: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/search", response_model=List[FilmSummary])
+async def search_films(
+    filters: SearchFilters,
+    limit: int = Query(20, ge=1, le=100)
+):
+    """Search films by various criteria"""
+    try:
+        async with get_db() as db:
+            conditions = ["analyzed_at IS NOT NULL"]
+            values = {}
+            
+            if filters.theme:
+                conditions.append("""
+                    EXISTS (
+                        SELECT 1 FROM jsonb_array_elements(metadata->'narrative'->'themes') as theme
+                        WHERE theme->>'name' ILIKE :theme
+                    )
+                """)
+                values["theme"] = f"%{filters.theme}%"
+            
+            if filters.min_duration:
+                conditions.append("duration >= :min_duration")
+                values["min_duration"] = filters.min_duration
+            
+            if filters.max_duration:
+                conditions.append("duration <= :max_duration")
+                values["max_duration"] = filters.max_duration
+            
+            if filters.mood:
+                conditions.append("""
+                    EXISTS (
+                        SELECT 1 FROM audio_features
+                        WHERE film_id = films.id AND mood = :mood
+                    )
+                """)
+                values["mood"] = filters.mood
+            
+            values["limit"] = limit
+            where_clause = " AND ".join(conditions)
+            
+            query = f"""
+                SELECT 
+                    id, title, duration, url, analyzed_at,
+                    metadata->>'style_fingerprint' as style_fingerprint,
+                    COALESCE(
+                        (SELECT json_agg(theme->>'name')
+                         FROM jsonb_array_elements(metadata->'narrative'->'themes') as theme
+                         LIMIT 3),
+                        '[]'::json
+                    ) as themes
+                FROM films
+                WHERE {where_clause}
+                ORDER BY analyzed_at DESC
+                LIMIT :limit
+            """
+            
+            films = await db.fetch_all(query, values=values)
+            
+            return [FilmSummary(**dict(f)) for f in films]
+            
+    except Exception as e:
+        logger.error(f"Error searching films: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# STATS ENDPOINT
+# ============================================================================
+
 @app.get("/api/stats")
 async def get_stats():
     """Get platform statistics"""
     try:
-        stats = await database.fetch_one("""
-            SELECT 
-                COUNT(*) as total_films,
-                SUM(duration) as total_duration,
-                COUNT(*) FILTER (WHERE analyzed_at > NOW() - INTERVAL '7 days') as recent_films,
-                (SELECT COUNT(*) FROM analysis_jobs WHERE status = 'pending') as pending_jobs,
-                (SELECT COUNT(*) FROM analysis_jobs WHERE status = 'processing') as processing_jobs
-            FROM films
-        """)
-        
-        return {
-            "total_films": stats['total_films'],
-            "total_duration_hours": round(stats['total_duration'] / 3600, 2) if stats['total_duration'] else 0,
-            "recent_films": stats['recent_films'],
-            "pending_jobs": stats['pending_jobs'],
-            "processing_jobs": stats['processing_jobs']
-        }
-        
+        async with get_db() as db:
+            stats = await db.fetch_one("""
+                SELECT 
+                    COUNT(*) as total_films,
+                    SUM(duration) as total_duration,
+                    COUNT(*) FILTER (WHERE analyzed_at > NOW() - INTERVAL '7 days') as films_last_week,
+                    (SELECT COUNT(*) FROM analysis_jobs WHERE status = 'pending') as pending_jobs,
+                    (SELECT COUNT(*) FROM analysis_jobs WHERE status = 'processing') as processing_jobs
+                FROM films
+            """)
+            
+            # Handle None values
+            if not stats:
+                return {
+                    "total_films": 0,
+                    "total_duration_hours": 0,
+                    "films_last_week": 0,
+                    "pending_jobs": 0,
+                    "processing_jobs": 0
+                }
+            
+            return {
+                "total_films": stats['total_films'] or 0,
+                "total_duration_hours": round(stats['total_duration'] / 3600, 2) if stats['total_duration'] else 0,
+                "films_last_week": stats['films_last_week'] or 0,
+                "pending_jobs": stats['pending_jobs'] or 0,
+                "processing_jobs": stats['processing_jobs'] or 0
+            }
+            
     except Exception as e:
         logger.error(f"Error fetching stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -386,4 +521,9 @@ async def get_stats():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True
+    )

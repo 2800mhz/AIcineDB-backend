@@ -141,6 +141,7 @@ async def submit_analysis(request: AnalysisRequest):
     try:
         async with get_db() as db:
             # Check if URL already analyzed
+            # ✅ DOĞRU:
             existing = await db.fetch_one(
                 "SELECT id, analyzed_at FROM films WHERE url = :url",
                 values={"url": str(request.url)}
@@ -203,7 +204,6 @@ async def get_job_status(job_id: int):
         logger.error(f"Error fetching job: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/api/jobs", response_model=List[AnalysisJobResponse])
 async def list_jobs(
     status: Optional[str] = None,
@@ -234,7 +234,6 @@ async def list_jobs(
     except Exception as e:
         logger.error(f"Error listing jobs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ============================================================================
 # FILM ENDPOINTS
@@ -372,6 +371,7 @@ async def find_similar_films(
                     ORDER BY f.visual_embedding <=> ref.visual_embedding
                     LIMIT :limit
                 """
+                similar = await db.fetch_all(query, values={"film_id": film_id, "limit": limit})
             elif similarity_type == "narrative":
                 query = """
                     SELECT 
@@ -385,6 +385,7 @@ async def find_similar_films(
                     ORDER BY f.text_embedding <=> ref.text_embedding
                     LIMIT :limit
                 """
+                similar = await db.fetch_all(query, values={"film_id": film_id, "limit": limit})
             else:  # combined
                 query = """
                     SELECT 
@@ -404,8 +405,7 @@ async def find_similar_films(
                     ORDER BY similarity DESC
                     LIMIT :limit
                 """
-            
-            similar = await db.fetch_all(query, values={"film_id": film_id, "limit": limit})
+                similar = await db.fetch_all(query, values={"film_id": film_id, "limit": limit})
             
             return [SimilarFilm(**dict(s)) for s in similar]
             
@@ -425,36 +425,45 @@ async def search_films(
     try:
         async with get_db() as db:
             conditions = ["analyzed_at IS NOT NULL"]
-            params = {}
+            values = {}
+            param_counter = 1
             
             if filters.theme:
-                conditions.append("""
+                param_name = f"theme"
+                conditions.append(f"""
                     EXISTS (
                         SELECT 1 FROM jsonb_array_elements(metadata->'narrative'->'themes') as theme
-                        WHERE theme->>'name' ILIKE :theme
+                        WHERE theme->>'name' ILIKE :{param_name}
                     )
                 """)
-                params['theme'] = f"%{filters.theme}%"
+                values[param_name] = f"%{filters.theme}%"
+                param_counter += 1
             
             if filters.min_duration:
-                conditions.append("duration >= :min_duration")
-                params['min_duration'] = filters.min_duration
+                param_name = f"min_duration"
+                conditions.append(f"duration >= :{param_name}")
+                values[param_name] = filters.min_duration
+                param_counter += 1
             
             if filters.max_duration:
-                conditions.append("duration <= :max_duration")
-                params['max_duration'] = filters.max_duration
+                param_name = f"max_duration"
+                conditions.append(f"duration <= :{param_name}")
+                values[param_name] = filters.max_duration
+                param_counter += 1
             
             if filters.mood:
-                conditions.append("""
+                param_name = f"mood"
+                conditions.append(f"""
                     EXISTS (
                         SELECT 1 FROM audio_features
-                        WHERE film_id = films.id AND mood = :mood
+                        WHERE film_id = films.id AND mood = :{param_name}
                     )
                 """)
-                params['mood'] = filters.mood
+                values[param_name] = filters.mood
+                param_counter += 1
             
+            values["limit"] = limit
             where_clause = " AND ".join(conditions)
-            params['limit'] = limit
             
             query = f"""
                 SELECT 
@@ -472,7 +481,7 @@ async def search_films(
                 LIMIT :limit
             """
             
-            films = await db.fetch_all(query, values=params)
+            films = await db.fetch_all(query, values=values)
             
             return [FilmSummary(**dict(f)) for f in films]
             
@@ -500,12 +509,22 @@ async def get_stats():
                 FROM films
             """)
             
+            # Handle None values
+            if not stats:
+                return {
+                    "total_films": 0,
+                    "total_duration_hours": 0,
+                    "films_last_week": 0,
+                    "pending_jobs": 0,
+                    "processing_jobs": 0
+                }
+            
             return {
-                "total_films": stats['total_films'],
+                "total_films": stats['total_films'] or 0,
                 "total_duration_hours": round(stats['total_duration'] / 3600, 2) if stats['total_duration'] else 0,
-                "films_last_week": stats['films_last_week'],
-                "pending_jobs": stats['pending_jobs'],
-                "processing_jobs": stats['processing_jobs']
+                "films_last_week": stats['films_last_week'] or 0,
+                "pending_jobs": stats['pending_jobs'] or 0,
+                "processing_jobs": stats['processing_jobs'] or 0
             }
             
     except Exception as e:

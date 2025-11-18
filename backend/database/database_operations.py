@@ -149,14 +149,15 @@ class DatabaseOperations:
     # JOBS
     # ============================================================================
     
+    # DOĞRU - Positional parameters ($1, $2) kullanmalı
     async def create_job(self, url: str, priority: int = 5) -> int:
         """Create analysis job"""
         query = """
             INSERT INTO analysis_jobs (url, status, priority)
-            VALUES (:url, 'pending', :priority)
+            VALUES ($1, 'pending', $2)
             RETURNING id
         """
-        result = await self.db.fetch_one(query, values={"url": url, "priority": priority})
+        result = await self.db.fetch_one(query, url, priority)
         return result['id'] if result else None
     
     async def update_job_status(
