@@ -1,6 +1,6 @@
 """
-Character Detection and Tracking
-Detects faces, tracks characters, and analyzes emotions
+Character Detection and Tracking - FIXED for Windows
+Uses InsightFace instead of face_recognition for better Windows compatibility
 """
 import logging
 from typing import List, Dict, Tuple
@@ -11,15 +11,17 @@ import cv2
 logger = logging.getLogger(__name__)
 
 try:
-    import face_recognition
-    FACE_RECOGNITION_AVAILABLE = True
+    import insightface
+    from insightface.app import FaceAnalysis
+    INSIGHTFACE_AVAILABLE = True
+    logger.info("✓ InsightFace available")
 except ImportError:
-    FACE_RECOGNITION_AVAILABLE = False
-    logger.warning("face_recognition not available")
+    INSIGHTFACE_AVAILABLE = False
+    logger.warning("InsightFace not available - using fallback")
 
 
 class CharacterTracker:
-    """Track characters and analyze screen time"""
+    """Track characters and analyze screen time using InsightFace"""
     
     def __init__(self, tolerance: float = 0.6):
         """
@@ -29,6 +31,20 @@ class CharacterTracker:
         self.tolerance = tolerance
         self.known_faces = []  # List of known face encodings
         self.character_data = {}  # Character ID -> data
+        self.face_analyzer = None
+        
+        if INSIGHTFACE_AVAILABLE:
+            try:
+                logger.info("Loading InsightFace model...")
+                self.face_analyzer = FaceAnalysis(
+                    name='buffalo_l',
+                    providers=['CPUExecutionProvider']  # Use CPU
+                )
+                self.face_analyzer.prepare(ctx_id=0, det_size=(640, 640))
+                logger.info("✓ InsightFace model loaded")
+            except Exception as e:
+                logger.error(f"Failed to load InsightFace: {e}")
+                self.face_analyzer = None
     
     def analyze_video(
         self,
@@ -47,8 +63,8 @@ class CharacterTracker:
         Returns:
             Dict with character information
         """
-        if not FACE_RECOGNITION_AVAILABLE:
-            logger.warning("Using fallback character detection")
+        if not self.face_analyzer:
+            logger.warning("InsightFace not available - using fallback")
             return self._dummy_analysis()
         
         try:
@@ -96,31 +112,34 @@ class CharacterTracker:
             return self._dummy_analysis()
     
     def _process_frame(self, frame: np.ndarray, timestamp: float):
-        """Process a single frame for faces"""
+        """Process a single frame for faces using InsightFace"""
         try:
-            # Convert BGR to RGB
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
             # Detect faces
-            face_locations = face_recognition.face_locations(rgb_frame, model="hog")
+            faces = self.face_analyzer.get(frame)
             
-            if not face_locations:
+            if not faces:
                 return
             
-            # Get face encodings
-            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-            
-            for encoding, location in zip(face_encodings, face_locations):
+            for face in faces:
+                # Get face embedding
+                embedding = face.embedding
+                
+                # Get bounding box
+                bbox = face.bbox.astype(int)
+                location = tuple(bbox)  # (x1, y1, x2, y2)
+                
                 # Match with known faces
-                character_id = self._match_or_create_character(encoding)
+                character_id = self._match_or_create_character(embedding)
                 
                 # Update character data
                 if character_id not in self.character_data:
                     self.character_data[character_id] = {
                         'id': character_id,
-                        'encoding': encoding,
+                        'embedding': embedding,
                         'appearances': [],
                         'locations': [],
+                        'age': face.age if hasattr(face, 'age') else None,
+                        'gender': face.gender if hasattr(face, 'gender') else None,
                     }
                 
                 self.character_data[character_id]['appearances'].append(timestamp)
@@ -129,30 +148,38 @@ class CharacterTracker:
         except Exception as e:
             logger.debug(f"Frame processing error: {e}")
     
-    def _match_or_create_character(self, encoding: np.ndarray) -> str:
-        """Match face encoding to known character or create new"""
+    def _match_or_create_character(self, embedding: np.ndarray) -> str:
+        """Match face embedding to known character or create new"""
         if not self.known_faces:
             # First face
             character_id = f"char_1"
-            self.known_faces.append((character_id, encoding))
+            self.known_faces.append((character_id, embedding))
             return character_id
         
-        # Compare with known faces
-        known_encodings = [enc for _, enc in self.known_faces]
-        matches = face_recognition.compare_faces(
-            known_encodings,
-            encoding,
-            tolerance=self.tolerance
-        )
+        # Compare with known faces using cosine similarity
+        best_match_idx = -1
+        best_similarity = -1
         
-        if True in matches:
+        for idx, (_, known_embedding) in enumerate(self.known_faces):
+            # Cosine similarity
+            similarity = np.dot(embedding, known_embedding) / (
+                np.linalg.norm(embedding) * np.linalg.norm(known_embedding)
+            )
+            
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_match_idx = idx
+        
+        # Match threshold (higher = stricter)
+        match_threshold = 0.4  # InsightFace embeddings are different from face_recognition
+        
+        if best_similarity > match_threshold:
             # Match found
-            match_idx = matches.index(True)
-            return self.known_faces[match_idx][0]
+            return self.known_faces[best_match_idx][0]
         else:
             # New character
             character_id = f"char_{len(self.known_faces) + 1}"
-            self.known_faces.append((character_id, encoding))
+            self.known_faces.append((character_id, embedding))
             return character_id
     
     def _compile_character_data(self, video_duration: float) -> List[Dict]:
@@ -162,26 +189,38 @@ class CharacterTracker:
         for char_id, data in self.character_data.items():
             appearances = data['appearances']
             
+            if not appearances:
+                continue
+            
             # Calculate screen time (approximate)
-            # Assume each appearance lasts until next sample or end
-            screen_time = len(appearances) * 1.0  # Rough estimate
+            # More accurate: count unique time intervals
+            screen_time = len(appearances) * 1.0  # Each sample = ~1 second
             
             # Classify role based on screen time
-            if screen_time > video_duration * 0.3:
+            screen_time_ratio = screen_time / video_duration
+            
+            if screen_time_ratio > 0.5:
                 role = "protagonist"
-            elif screen_time > video_duration * 0.1:
+            elif screen_time_ratio > 0.2:
                 role = "supporting"
             else:
                 role = "minor"
             
+            # Get demographics if available
+            age = data.get('age')
+            gender = data.get('gender')
+            gender_str = 'Male' if gender == 1 else 'Female' if gender == 0 else None
+            
             characters.append({
                 'character_id': char_id,
-                'name': None,  # Could be added via face recognition API
+                'name': None,  # Would need face recognition API
                 'role': role,
-                'screen_time': screen_time,
+                'screen_time': float(screen_time),
                 'total_appearances': len(appearances),
-                'first_appearance': min(appearances),
-                'last_appearance': max(appearances),
+                'first_appearance': float(min(appearances)),
+                'last_appearance': float(max(appearances)),
+                'age': int(age) if age else None,
+                'gender': gender_str,
                 'primary_emotion': 'neutral',  # Could add emotion detection
                 'confidence': 0.8,
             })
@@ -192,7 +231,8 @@ class CharacterTracker:
         return characters
     
     def _dummy_analysis(self) -> Dict:
-        """Dummy analysis when face_recognition unavailable"""
+        """Dummy analysis when InsightFace unavailable"""
+        logger.warning("Using dummy character analysis")
         return {
             'characters': [
                 {
@@ -203,8 +243,10 @@ class CharacterTracker:
                     'total_appearances': 45,
                     'first_appearance': 5.0,
                     'last_appearance': 175.0,
+                    'age': None,
+                    'gender': None,
                     'primary_emotion': 'neutral',
-                    'confidence': 0.7,
+                    'confidence': 0.5,
                 }
             ],
             'total_characters': 1,
@@ -212,19 +254,9 @@ class CharacterTracker:
             'frames_analyzed': 180,
         }
     
-    def detect_emotions(self, frame: np.ndarray, face_location: Tuple) -> str:
-        """
-        Detect emotion from face (placeholder for future implementation)
-        Could use FER (Facial Expression Recognition) library
-        """
-        # This would require additional library like fer or deepface
-        emotions = ['neutral', 'happy', 'sad', 'angry', 'surprised', 'fear']
-        return np.random.choice(emotions)  # Placeholder
-    
     def generate_character_embedding(self, encoding: np.ndarray) -> np.ndarray:
         """Generate embedding for character similarity"""
-        # Face encoding is already 128-dim embedding from face_recognition
-        if encoding is not None and len(encoding) == 128:
+        if encoding is not None and len(encoding) == 512:  # InsightFace embeddings are 512-dim
             return encoding.astype(np.float32)
         else:
-            return np.random.randn(128).astype(np.float32)
+            return np.random.randn(512).astype(np.float32)

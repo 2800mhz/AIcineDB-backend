@@ -22,7 +22,7 @@ from backend.analyzers.narrative.gemini_analyzer import GeminiNarrativeAnalyzer
 class FullAnalysisPipeline:
     """Complete film analysis pipeline"""
     
-    def __init__(self, output_base_dir: str = "/app/analyses"):
+    def __init__(self, output_base_dir: str = "./analyses"):
         """
         Args:
             output_base_dir: Base directory for analysis outputs
@@ -333,5 +333,5 @@ class FullAnalysisPipeline:
     def _update_progress(self, callback, progress: float, status: str):
         """Update progress via callback"""
         if callback:
-            callback(progress, status)
+            callback(progress, status) 
         logger.info(f"[{progress:.0%}] {status}")

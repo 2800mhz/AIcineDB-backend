@@ -1,5 +1,5 @@
 """
-AI Cine Analyzer - Main FastAPI Application
+AI Cine Analyzer - Main FastAPI Application - FIXED
 Modern film analysis platform with Gemini AI
 """
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Query
@@ -8,6 +8,7 @@ from pydantic import BaseModel, HttpUrl, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import logging
+import json
 
 from backend.database.connection import get_db, init_db
 from backend.tasks.video_tasks import analyze_film_complete
@@ -230,9 +231,8 @@ async def list_jobs(
         logger.error(f"Error listing jobs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ============================================================================
-# FILM ENDPOINTS
+# FILM ENDPOINTS - FIXED JSON PARSING
 # ============================================================================
 
 @app.get("/api/films", response_model=List[FilmSummary])
@@ -241,9 +241,11 @@ async def list_films(
     limit: int = Query(20, ge=1, le=100),
     sort_by: str = Query("analyzed_at", regex="^(title|duration|analyzed_at)$")
 ):
-    """List all analyzed films"""
+    """List all analyzed films - FIXED"""
     try:
         async with get_db() as db:
+            # FIXED: Don't try to extract themes from metadata in SQL
+            # We'll handle it in Python instead
             query = f"""
                 SELECT 
                     id,
@@ -251,13 +253,7 @@ async def list_films(
                     duration,
                     url,
                     analyzed_at,
-                    metadata->>'style_fingerprint' as style_fingerprint,
-                    COALESCE(
-                        (SELECT json_agg(theme->>'name')
-                         FROM jsonb_array_elements(metadata->'narrative'->'themes') as theme
-                         LIMIT 3),
-                        '[]'::json
-                    ) as themes
+                    metadata->>'style_fingerprint' as style_fingerprint
                 FROM films
                 WHERE analyzed_at IS NOT NULL
                 ORDER BY {sort_by} DESC
@@ -266,7 +262,34 @@ async def list_films(
             
             films = await db.fetch_all(query, values={"limit": limit, "skip": skip})
             
-            return [FilmSummary(**dict(film)) for film in films]
+            # Parse each film and extract themes from metadata
+            result = []
+            for film in films:
+                film_dict = dict(film)
+                
+                # Extract themes from metadata if it exists
+                # Get full metadata
+                full_film = await db.fetch_one(
+                    "SELECT metadata FROM films WHERE id = :id",
+                    values={"id": film_dict['id']}
+                )
+                
+                themes = []
+                if full_film and full_film['metadata']:
+                    try:
+                        metadata = json.loads(full_film['metadata']) if isinstance(full_film['metadata'], str) else full_film['metadata']
+                        # Try to get themes from narrative section
+                        if 'narrative' in metadata and 'themes' in metadata['narrative']:
+                            themes_data = metadata['narrative']['themes']
+                            if isinstance(themes_data, list):
+                                themes = [t.get('name', t) if isinstance(t, dict) else str(t) for t in themes_data[:3]]
+                    except:
+                        pass
+                
+                film_dict['themes'] = themes
+                result.append(FilmSummary(**film_dict))
+            
+            return result
             
     except Exception as e:
         logger.error(f"Error listing films: {e}")
@@ -275,7 +298,7 @@ async def list_films(
 
 @app.get("/api/films/{film_id}", response_model=FilmDetail)
 async def get_film(film_id: int):
-    """Get complete analysis for a film"""
+    """Get complete analysis for a film - FIXED"""
     try:
         async with get_db() as db:
             # Get film
@@ -286,6 +309,15 @@ async def get_film(film_id: int):
             
             if not film:
                 raise HTTPException(status_code=404, detail="Film not found")
+            
+            film_dict = dict(film)
+            
+            # FIXED: Parse metadata if it's a string
+            if film_dict.get('metadata') and isinstance(film_dict['metadata'], str):
+                try:
+                    film_dict['metadata'] = json.loads(film_dict['metadata'])
+                except json.JSONDecodeError:
+                    film_dict['metadata'] = {}
             
             # Get related data
             narrative = await db.fetch_one(
@@ -319,7 +351,7 @@ async def get_film(film_id: int):
             )
             
             return FilmDetail(
-                **dict(film),
+                **film_dict,
                 narrative=dict(narrative) if narrative else None,
                 transcript=dict(transcript) if transcript else None,
                 audio_features=dict(audio) if audio else None,
@@ -455,13 +487,7 @@ async def search_films(
             query = f"""
                 SELECT 
                     id, title, duration, url, analyzed_at,
-                    metadata->>'style_fingerprint' as style_fingerprint,
-                    COALESCE(
-                        (SELECT json_agg(theme->>'name')
-                         FROM jsonb_array_elements(metadata->'narrative'->'themes') as theme
-                         LIMIT 3),
-                        '[]'::json
-                    ) as themes
+                    metadata->>'style_fingerprint' as style_fingerprint
                 FROM films
                 WHERE {where_clause}
                 ORDER BY analyzed_at DESC
@@ -470,7 +496,32 @@ async def search_films(
             
             films = await db.fetch_all(query, values=values)
             
-            return [FilmSummary(**dict(f)) for f in films]
+            # Parse themes like in list_films
+            result = []
+            for film in films:
+                film_dict = dict(film)
+                
+                # Get metadata for themes
+                full_film = await db.fetch_one(
+                    "SELECT metadata FROM films WHERE id = :id",
+                    values={"id": film_dict['id']}
+                )
+                
+                themes = []
+                if full_film and full_film['metadata']:
+                    try:
+                        metadata = json.loads(full_film['metadata']) if isinstance(full_film['metadata'], str) else full_film['metadata']
+                        if 'narrative' in metadata and 'themes' in metadata['narrative']:
+                            themes_data = metadata['narrative']['themes']
+                            if isinstance(themes_data, list):
+                                themes = [t.get('name', t) if isinstance(t, dict) else str(t) for t in themes_data[:3]]
+                    except:
+                        pass
+                
+                film_dict['themes'] = themes
+                result.append(FilmSummary(**film_dict))
+            
+            return result
             
     except Exception as e:
         logger.error(f"Error searching films: {e}")

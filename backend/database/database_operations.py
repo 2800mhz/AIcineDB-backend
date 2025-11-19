@@ -1,5 +1,5 @@
 """
-Database operations for AIcineDB - FIXED
+Database operations for AIcineDB - FIXED for pgvector
 """
 import logging
 from typing import Dict, List, Optional, Any
@@ -16,20 +16,31 @@ class DatabaseOperations:
     def __init__(self, database: Database):
         self.db = database
     
-    def _prepare_embedding(self, embedding) -> List[float]:
-        """Convert embedding to list format for pgvector"""
+    def _prepare_embedding(self, embedding) -> Optional[str]:
+        """
+        Convert embedding to pgvector string format
+        
+        CRITICAL: pgvector expects string format like '[0.1, 0.2, 0.3]'
+        NOT a Python list
+        """
         if embedding is None:
             return None
         
+        # Convert to list if numpy array
         if isinstance(embedding, np.ndarray):
-            return embedding.tolist()
-        elif isinstance(embedding, list):
-            return embedding
-        else:
-            raise ValueError(f"Unsupported embedding type: {type(embedding)}")
+            embedding = embedding.tolist()
+        elif not isinstance(embedding, list):
+            logger.warning(f"Unexpected embedding type: {type(embedding)}")
+            return None
+        
+        # Convert to pgvector string format
+        # Format: '[0.1, 0.2, 0.3, ...]'
+        embedding_str = '[' + ','.join(str(float(x)) for x in embedding) + ']'
+        
+        return embedding_str
     
     # ============================================================================
-    # JOBS - FIXED METHOD
+    # JOBS
     # ============================================================================
     
     async def update_job_status(
@@ -42,12 +53,7 @@ class DatabaseOperations:
         error_message: str = None,
         celery_task_id: str = None
     ):
-        """
-        Update job status - FIXED VERSION
-        
-        CRITICAL: Uses named parameters with 'values' dict
-        NOT positional parameters with list
-        """
+        """Update job status - FIXED VERSION"""
         
         # Build the UPDATE query parts
         updates = ["status = :status"]
@@ -111,10 +117,15 @@ class DatabaseOperations:
             'shot_statistics': analysis_result.get('shot_statistics', {})
         }
         
-        # Prepare embeddings
+        # FIXED: Prepare embeddings in pgvector string format
         visual_emb = self._prepare_embedding(analysis_result.get('visual_embedding'))
         text_emb = self._prepare_embedding(analysis_result.get('text_embedding'))
         audio_emb = self._prepare_embedding(analysis_result.get('audio_embedding'))
+        
+        logger.info(f"💾 Saving film: {analysis_result.get('title')}")
+        logger.debug(f"Visual embedding: {visual_emb[:50] if visual_emb else None}...")
+        logger.debug(f"Text embedding: {text_emb[:50] if text_emb else None}...")
+        logger.debug(f"Audio embedding: {audio_emb[:50] if audio_emb else None}...")
         
         query = """
             INSERT INTO films (
@@ -142,6 +153,7 @@ class DatabaseOperations:
         )
         
         film_id = result['id']
+        logger.info(f"✓ Film created with ID: {film_id}")
         
         # Create related records
         await self._create_shots(film_id, analysis_result.get('shots', []))
@@ -202,6 +214,8 @@ class DatabaseOperations:
         if not shots:
             return
         
+        logger.info(f"💾 Saving {len(shots)} shots...")
+        
         for shot in shots:
             query = """
                 INSERT INTO shots (
@@ -233,7 +247,12 @@ class DatabaseOperations:
         if not characters:
             return
         
+        logger.info(f"💾 Saving {len(characters)} characters...")
+        
         for char in characters:
+            # FIXED: Convert face embedding to pgvector string format
+            face_emb = self._prepare_embedding(char.get('face_embedding'))
+            
             query = """
                 INSERT INTO characters (
                     film_id, character_id, name, role,
@@ -256,7 +275,7 @@ class DatabaseOperations:
                     "total_appearances": char.get('total_appearances', 0),
                     "primary_emotion": char.get('primary_emotion'),
                     "confidence": char.get('confidence'),
-                    "face_embedding": self._prepare_embedding(char.get('face_embedding'))
+                    "face_embedding": face_emb
                 }
             )
     
@@ -264,6 +283,8 @@ class DatabaseOperations:
         """Create scene records"""
         if not scenes:
             return
+        
+        logger.info(f"💾 Saving {len(scenes)} scenes...")
         
         for scene in scenes:
             query = """
@@ -295,6 +316,8 @@ class DatabaseOperations:
         if not narrative:
             return
         
+        logger.info(f"💾 Saving narrative analysis...")
+        
         query = """
             INSERT INTO narratives (
                 film_id, logline, synopsis, themes, genre, tone,
@@ -325,6 +348,8 @@ class DatabaseOperations:
         if not transcript:
             return
         
+        logger.info(f"💾 Saving transcript...")
+        
         query = """
             INSERT INTO transcripts (
                 film_id, text, language, word_count, segments
@@ -347,6 +372,8 @@ class DatabaseOperations:
         """Create audio features record"""
         if not audio_features:
             return
+        
+        logger.info(f"💾 Saving audio features...")
         
         query = """
             INSERT INTO audio_features (

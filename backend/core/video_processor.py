@@ -1,5 +1,5 @@
 """
-Video Processing Module
+Video Processing Module - FIXED for 403 Errors
 Downloads, extracts frames and audio from videos
 """
 import os
@@ -33,7 +33,7 @@ class VideoProcessor:
     
     def download_video(self, url: str, video_id: str) -> Dict:
         """
-        Download video from URL
+        Download video from URL with enhanced error handling
         
         Args:
             url: Video URL (YouTube, etc.)
@@ -49,12 +49,38 @@ class VideoProcessor:
         
         output_template = str(self.videos_dir / f"{video_id}.%(ext)s")
         
+        # FIXED: Enhanced ydl_opts to handle 403 errors
         ydl_opts = {
-            'format': 'best[height<=720]',  # Max 720p to save space
+            'format': 'best[height<=720]',
             'outtmpl': output_template,
             'quiet': False,
             'no_warnings': False,
             'extract_flat': False,
+            
+            # Add user agent to avoid bot detection
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            
+            # Add referer
+            'referer': 'https://www.youtube.com/',
+            
+            # Retry settings
+            'retries': 10,
+            'fragment_retries': 10,
+            
+            # Network settings
+            'socket_timeout': 30,
+            'http_chunk_size': 10485760,  # 10MB chunks
+            
+            # Ignore errors on unavailable fragments
+            'ignoreerrors': False,
+            
+            # Add headers to bypass restrictions
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate',
+            },
         }
         
         try:
@@ -78,8 +104,31 @@ class VideoProcessor:
                 logger.info(f"✅ Downloaded: {result['title']} ({result['duration']}s)")
                 return result
                 
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e)
+            
+            if "HTTP Error 403" in error_msg or "Forbidden" in error_msg:
+                logger.error(f"❌ YouTube blocked the request (403 Forbidden)")
+                logger.error(f"   This usually means:")
+                logger.error(f"   1. yt-dlp needs an update: pip install --upgrade yt-dlp")
+                logger.error(f"   2. Video has geo-restrictions or requires login")
+                logger.error(f"   3. YouTube's bot detection triggered")
+                
+                raise Exception(
+                    "YouTube blocked the download (403 Forbidden). "
+                    "Please update yt-dlp: pip install --upgrade yt-dlp"
+                )
+            
+            elif "unavailable" in error_msg.lower():
+                logger.error(f"❌ Video is unavailable or private")
+                raise Exception(f"Video unavailable: {error_msg}")
+            
+            else:
+                logger.error(f"❌ Download failed: {error_msg}")
+                raise Exception(f"Download failed: {error_msg}")
+                
         except Exception as e:
-            logger.error(f"❌ Download failed: {e}")
+            logger.error(f"❌ Unexpected error during download: {e}")
             raise
     
     def extract_frames(
@@ -176,7 +225,7 @@ class VideoProcessor:
         
         audio_path = self.audio_dir / f"{video_id}.wav"
         
-        # Use ffmpeg via opencv
+        # Use ffmpeg via subprocess
         import subprocess
         
         cmd = [

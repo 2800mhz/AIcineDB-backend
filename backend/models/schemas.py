@@ -1,10 +1,11 @@
 """
-Pydantic Models for API Request/Response Schemas
+Pydantic Models for API Request/Response Schemas - FIXED
 """
 from pydantic import BaseModel, HttpUrl, Field, validator
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from datetime import datetime
 from enum import Enum
+import json
 
 
 # ============================================================================
@@ -195,7 +196,7 @@ class TranscriptInfo(BaseModel):
 
 
 class FilmDetail(BaseModel):
-    """Complete film analysis"""
+    """Complete film analysis - FIXED for metadata field"""
     id: int
     title: str
     duration: float
@@ -203,8 +204,8 @@ class FilmDetail(BaseModel):
     uploader: Optional[str] = None
     analyzed_at: Optional[datetime] = None
     
-    # Metadata
-    metadata: Optional[Dict[str, Any]] = None
+    # FIXED: metadata can be string (from DB) or dict
+    metadata: Optional[Union[Dict[str, Any], str]] = None
     
     # Analysis results
     narrative: Optional[NarrativeInfo] = None
@@ -213,6 +214,16 @@ class FilmDetail(BaseModel):
     shots: List[ShotInfo] = []
     characters: List[CharacterInfo] = []
     scenes: List[SceneInfo] = []
+    
+    @validator('metadata', pre=True)
+    def parse_metadata(cls, v):
+        """Parse metadata if it's a JSON string"""
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError:
+                return {}
+        return v if v is not None else {}
     
     class Config:
         schema_extra = {
