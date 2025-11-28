@@ -5,7 +5,7 @@ Syncs analyzed films to Supabase database for Lovable frontend (cineai-showcase 
 import os
 import re
 import logging
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from datetime import datetime
 
 import httpx
@@ -73,13 +73,12 @@ class SupabaseSyncService:
         
         return slug
     
-    def _get_thumbnail(self, url: str, keyframes: Optional[List[Dict]] = None) -> Optional[str]:
+    def _get_thumbnail(self, url: str) -> Optional[str]:
         """
-        Extract thumbnail URL from video URL or keyframes.
+        Extract thumbnail URL from video URL.
         
         Args:
             url: Original video URL
-            keyframes: List of keyframe data with paths
             
         Returns:
             Thumbnail URL or None
@@ -99,9 +98,7 @@ class SupabaseSyncService:
                 # Return high quality YouTube thumbnail
                 return f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
         
-        # If not YouTube, try to use first keyframe if available
-        # Note: Keyframe paths are local, so we can't use them directly as URLs
-        # Return None and let the frontend handle missing thumbnails
+        # If not YouTube, return None and let the frontend handle missing thumbnails
         return None
     
     def _map_analysis_to_title(self, film_data: Dict) -> Dict:
@@ -162,17 +159,17 @@ class SupabaseSyncService:
         description = narrative.get('synopsis') or logline
         
         # Get thumbnail/poster URL
-        poster_url = self._get_thumbnail(
-            film_data.get('url'),
-            [s for s in shots if s.get('keyframe_path')]
-        )
+        poster_url = self._get_thumbnail(film_data.get('url'))
+        
+        # Get year from metadata or use current year as fallback
+        year = film_data.get('year') or datetime.now().year
         
         # Build the title record for Supabase
         title_record = {
             "title": title,
             "slug": slug,
             "type": "movie",
-            "year": datetime.now().year,
+            "year": year,
             "duration": duration_minutes,
             "logline": logline,
             "description": description,
@@ -196,7 +193,7 @@ class SupabaseSyncService:
     async def sync_film(self, film_data: Dict) -> Optional[Dict]:
         """
         Sync a film analysis to Supabase.
-        Performs upsert based on aicinedb_film_id.
+        Performs upsert based on aicinedb_film_id using Supabase's native upsert.
         
         Args:
             film_data: Complete analysis result from the pipeline
@@ -216,51 +213,30 @@ class SupabaseSyncService:
             title_record = self._map_analysis_to_title(film_data)
             
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # Check if record already exists
-                check_url = f"{self.rest_url}/titles"
-                check_params = {
-                    "aicinedb_film_id": f"eq.{job_id}",
-                    "select": "id"
+                # Use Supabase's native upsert with on_conflict
+                upsert_url = f"{self.rest_url}/titles"
+                
+                # Set headers for upsert operation
+                upsert_headers = {
+                    **self.headers,
+                    "Prefer": "return=representation,resolution=merge-duplicates"
                 }
                 
-                check_response = await client.get(
-                    check_url,
-                    headers=self.headers,
-                    params=check_params
+                response = await client.post(
+                    upsert_url,
+                    headers=upsert_headers,
+                    params={"on_conflict": "aicinedb_film_id"},
+                    json=title_record
                 )
-                check_response.raise_for_status()
-                existing = check_response.json()
+                response.raise_for_status()
+                result = response.json()
                 
-                if existing and len(existing) > 0:
-                    # Update existing record
-                    existing_id = existing[0]['id']
-                    update_url = f"{self.rest_url}/titles?id=eq.{existing_id}"
-                    
-                    response = await client.patch(
-                        update_url,
-                        headers=self.headers,
-                        json=title_record
-                    )
-                    response.raise_for_status()
-                    result = response.json()
-                    
-                    logger.info(f"✓ Updated existing film in Supabase (id: {existing_id})")
-                else:
-                    # Create new record
-                    create_url = f"{self.rest_url}/titles"
-                    
-                    response = await client.post(
-                        create_url,
-                        headers=self.headers,
-                        json=title_record
-                    )
-                    response.raise_for_status()
-                    result = response.json()
-                    
-                    new_id = result[0]['id'] if result else 'unknown'
-                    logger.info(f"✓ Created new film in Supabase (id: {new_id})")
+                if result:
+                    record_id = result[0].get('id', 'unknown')
+                    logger.info(f"✓ Synced film to Supabase (id: {record_id})")
+                    return result[0]
                 
-                return result[0] if result else None
+                return None
                 
         except httpx.HTTPStatusError as e:
             logger.warning(

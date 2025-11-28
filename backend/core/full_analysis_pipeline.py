@@ -259,13 +259,12 @@ class FullAnalysisPipeline:
             self._update_progress(progress_callback, 0.95, "✓ Results compiled")
             
             # ============================================================
-            # STAGE 10: Save to Database (95-98%)
+            # STAGE 10: Prepare for Database Save (95-98%)
+            # Note: Actual database save is handled by the caller (Celery task)
             # ============================================================
-            self._update_progress(progress_callback, 0.96, "💾 Saving to database...")
+            self._update_progress(progress_callback, 0.96, "💾 Preparing for database save...")
             
-            # This will be handled by the caller (Celery task)
-            
-            self._update_progress(progress_callback, 0.98, "✓ Saved to database")
+            self._update_progress(progress_callback, 0.98, "✓ Ready for database save")
             
             # ============================================================
             # STAGE 11: Sync to Supabase (98-100%)
