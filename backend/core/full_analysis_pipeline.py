@@ -17,6 +17,7 @@ from backend.analyzers.cinematography.style_classifier import StyleClassifier
 from backend.analyzers.audio.audio_analyzer import AudioAnalyzer
 from backend.analyzers.characters.character_tracker import CharacterTracker
 from backend.analyzers.narrative.gemini_analyzer import GeminiNarrativeAnalyzer
+from backend.services.supabase_sync import SupabaseSyncService
 
 
 class FullAnalysisPipeline:
@@ -43,6 +44,9 @@ class FullAnalysisPipeline:
         except Exception as e:
             logger.warning(f"Gemini analyzer unavailable: {e}")
             self.narrative_analyzer = None
+        
+        # Supabase sync service (optional - disabled if not configured)
+        self.supabase_sync = SupabaseSyncService()
     
     async def analyze_film(
         self,
@@ -255,11 +259,26 @@ class FullAnalysisPipeline:
             self._update_progress(progress_callback, 0.95, "✓ Results compiled")
             
             # ============================================================
-            # STAGE 10: Save to Database (95-100%)
+            # STAGE 10: Prepare for Database Save (95-98%)
+            # Note: Actual database save is handled by the caller (Celery task)
             # ============================================================
-            self._update_progress(progress_callback, 0.97, "💾 Saving to database...")
+            self._update_progress(progress_callback, 0.96, "💾 Preparing for database save...")
             
-            # This will be handled by the caller (Celery task)
+            self._update_progress(progress_callback, 0.98, "✓ Ready for database save")
+            
+            # ============================================================
+            # STAGE 11: Sync to Supabase (98-100%)
+            # ============================================================
+            if self.supabase_sync.enabled:
+                self._update_progress(progress_callback, 0.98, "🔄 Syncing to showcase platform...")
+                
+                try:
+                    await self.supabase_sync.sync_film(analysis_result)
+                    self._update_progress(progress_callback, 0.99, "✓ Synced to showcase platform")
+                except Exception as sync_error:
+                    # Log warning but don't fail the analysis
+                    logger.warning(f"⚠ Supabase sync failed (non-critical): {sync_error}")
+                    self._update_progress(progress_callback, 0.99, "⚠ Showcase sync skipped")
             
             self._update_progress(progress_callback, 1.0, "✅ Analysis complete!")
             
