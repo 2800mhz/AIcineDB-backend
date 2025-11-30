@@ -1,12 +1,12 @@
 """
-Video Processing Module - FIXED for 403 Errors
-Downloads, extracts frames and audio from videos
+Video Processor - YouTube & Vimeo Support
+Downloads and processes videos from multiple platforms
 """
 import os
+import re
 import logging
 from pathlib import Path
 from typing import Dict, Optional
-import cv2
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,10 @@ except ImportError:
 
 
 class VideoProcessor:
-    """Handles video download and processing"""
+    """Handles video download and processing from YouTube, Vimeo, and other platforms"""
+    
+    # Supported platforms
+    SUPPORTED_PLATFORMS = ['youtube', 'vimeo', 'dailymotion', 'twitter', 'facebook']
     
     def __init__(self, output_dir: str = "/app/data"):
         self.output_dir = Path(output_dir)
@@ -31,12 +34,115 @@ class VideoProcessor:
         for directory in [self.videos_dir, self.frames_dir, self.audio_dir]:
             directory.mkdir(parents=True, exist_ok=True)
     
-    def download_video(self, url: str, video_id: str) -> Dict:
+    def detect_platform(self, url: str) -> str:
         """
-        Download video from URL with enhanced error handling
+        Detect video platform from URL
         
         Args:
-            url: Video URL (YouTube, etc.)
+            url: Video URL
+            
+        Returns:
+            Platform name (youtube, vimeo, etc.)
+        """
+        url_lower = url.lower()
+        
+        if 'youtube.com' in url_lower or 'youtu.be' in url_lower:
+            return 'youtube'
+        elif 'vimeo.com' in url_lower:
+            return 'vimeo'
+        elif 'dailymotion.com' in url_lower:
+            return 'dailymotion'
+        elif 'twitter.com' in url_lower or 'x.com' in url_lower:
+            return 'twitter'
+        elif 'facebook.com' in url_lower or 'fb.watch' in url_lower:
+            return 'facebook'
+        else:
+            return 'unknown'
+    
+    def get_video_id(self, url: str) -> Optional[str]:
+        """
+        Extract video ID from URL
+        
+        Args:
+            url: Video URL
+            
+        Returns:
+            Video ID or None
+        """
+        platform = self.detect_platform(url)
+        
+        if platform == 'youtube':
+            # YouTube patterns
+            patterns = [
+                r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})',
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, url)
+                if match:
+                    return match.group(1)
+                    
+        elif platform == 'vimeo':
+            # Vimeo patterns
+            patterns = [
+                r'vimeo\.com/(\d+)',
+                r'vimeo\.com/video/(\d+)',
+                r'player\.vimeo\.com/video/(\d+)',
+                r'vimeo\.com/channels/[^/]+/(\d+)',
+                r'vimeo\.com/groups/[^/]+/videos/(\d+)',
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, url)
+                if match:
+                    return match.group(1)
+        
+        return None
+    
+    def get_platform_options(self, platform: str) -> Dict:
+        base_opts = {
+            'format': 'best',
+            'quiet': False,
+            'no_warnings': False,
+            'extract_flat': False,
+            'retries': 10,
+            'fragment_retries': 10,
+            'socket_timeout': 30,
+            'http_chunk_size': 10485760,
+            'ignoreerrors': False,
+            # 'cookiefile': yol, # Burası sadece Vimeo için eklenecek!
+        }
+
+        if platform == 'youtube':
+            base_opts.update({
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'referer': 'https://www.youtube.com/',
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-us,en;q=0.5',
+                    'Sec-Fetch-Mode': 'navigate',
+                },
+            })
+
+        elif platform == 'vimeo':
+            base_opts.update({
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'referer': 'https://vimeo.com/',
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-us,en;q=0.5',
+                    'Origin': 'https://vimeo.com',
+                },
+                'cookiefile': r'C:\Users\gcmsx\Desktop\AIcineDB\AIcineDB-backend\backend\cookies\vimeo_cookies.txt',
+                # 'cookiesfrombrowser': ('chrome',),  # BUNU TAMAMEN KALDIR!!!
+            })
+        return base_opts
+    def download_video(self, url: str, video_id: str) -> Dict:
+        """
+        Download video from URL (YouTube, Vimeo, etc.)
+        
+        Args:
+            url: Video URL (YouTube, Vimeo, etc.)
             video_id: Unique identifier for the video
             
         Returns:
@@ -45,43 +151,15 @@ class VideoProcessor:
         if not YT_DLP_AVAILABLE:
             raise ImportError("yt-dlp is not installed")
         
-        logger.info(f"📥 Downloading video from: {url}")
+        # Detect platform
+        platform = self.detect_platform(url)
+        logger.info(f"📥 Downloading {platform.upper()} video from: {url}")
         
         output_template = str(self.videos_dir / f"{video_id}.%(ext)s")
         
-        # FIXED: Enhanced ydl_opts to handle 403 errors
-        ydl_opts = {
-            'format': 'best[height<=720]',
-            'outtmpl': output_template,
-            'quiet': False,
-            'no_warnings': False,
-            'extract_flat': False,
-            
-            # Add user agent to avoid bot detection
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            
-            # Add referer
-            'referer': 'https://www.youtube.com/',
-            
-            # Retry settings
-            'retries': 10,
-            'fragment_retries': 10,
-            
-            # Network settings
-            'socket_timeout': 30,
-            'http_chunk_size': 10485760,  # 10MB chunks
-            
-            # Ignore errors on unavailable fragments
-            'ignoreerrors': False,
-            
-            # Add headers to bypass restrictions
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate',
-            },
-        }
+        # Get platform-specific options
+        ydl_opts = self.get_platform_options(platform)
+        ydl_opts['outtmpl'] = output_template
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -89,205 +167,121 @@ class VideoProcessor:
                 
                 video_path = ydl.prepare_filename(info)
                 
+                # Get thumbnail URL based on platform
+                thumbnail = self._get_thumbnail_url(url, info, platform)
+                
                 result = {
                     'video_path': video_path,
                     'title': info.get('title', 'Unknown'),
                     'duration': info.get('duration', 0),
                     'uploader': info.get('uploader', 'Unknown'),
-                    'thumbnail': info.get('thumbnail'),
+                    'thumbnail': thumbnail,
                     'description': info.get('description', ''),
                     'width': info.get('width', 0),
                     'height': info.get('height', 0),
                     'fps': info.get('fps', 30),
+                    'platform': platform,
+                    'platform_id': self.get_video_id(url),
+                    'view_count': info.get('view_count', 0),
+                    'like_count': info.get('like_count', 0),
+                    'upload_date': info.get('upload_date'),
                 }
                 
-                logger.info(f"✅ Downloaded: {result['title']} ({result['duration']}s)")
+                logger.info(f"✅ Downloaded [{platform.upper()}]: {result['title']} ({result['duration']}s)")
                 return result
                 
         except yt_dlp.utils.DownloadError as e:
             error_msg = str(e)
+            logger.error(f"❌ Download failed [{platform}]: {error_msg}")
             
-            if "HTTP Error 403" in error_msg or "Forbidden" in error_msg:
-                logger.error(f"❌ YouTube blocked the request (403 Forbidden)")
-                logger.error(f"   This usually means:")
-                logger.error(f"   1. yt-dlp needs an update: pip install --upgrade yt-dlp")
-                logger.error(f"   2. Video has geo-restrictions or requires login")
-                logger.error(f"   3. YouTube's bot detection triggered")
-                
-                raise Exception(
-                    "YouTube blocked the download (403 Forbidden). "
-                    "Please update yt-dlp: pip install --upgrade yt-dlp"
-                )
+            # Platform-specific error handling
+            if platform == 'vimeo':
+                if 'private' in error_msg.lower():
+                    raise Exception(f"This Vimeo video is private. Please check if you have access.")
+                elif 'password' in error_msg.lower():
+                    raise Exception(f"This Vimeo video is password protected.")
+            elif platform == 'youtube':
+                if '403' in error_msg:
+                    raise Exception(f"YouTube blocked the request. Try again later.")
+                elif 'unavailable' in error_msg.lower():
+                    raise Exception(f"This YouTube video is unavailable.")
             
-            elif "unavailable" in error_msg.lower():
-                logger.error(f"❌ Video is unavailable or private")
-                raise Exception(f"Video unavailable: {error_msg}")
+            raise Exception(f"Failed to download video: {error_msg}")
             
-            else:
-                logger.error(f"❌ Download failed: {error_msg}")
-                raise Exception(f"Download failed: {error_msg}")
-                
         except Exception as e:
-            logger.error(f"❌ Unexpected error during download: {e}")
+            logger.error(f"❌ Unexpected error downloading video: {e}")
             raise
     
-    def extract_frames(
-        self, 
-        video_path: str, 
-        video_id: str,
-        fps: float = 1.0,
-        max_frames: int = 300
-    ) -> Dict:
+    def _get_thumbnail_url(self, url: str, info: Dict, platform: str) -> Optional[str]:
         """
-        Extract frames from video
+        Get thumbnail URL for video
         
         Args:
-            video_path: Path to video file
-            video_id: Unique identifier
-            fps: Frames per second to extract (1 = 1 frame/sec)
-            max_frames: Maximum number of frames to extract
+            url: Original video URL
+            info: Video info from yt-dlp
+            platform: Platform name
             
         Returns:
-            Dict with frame paths and info
+            Thumbnail URL or None
         """
-        logger.info(f"🎞️ Extracting frames at {fps} FPS...")
+        # First try to get from yt-dlp info
+        if info.get('thumbnail'):
+            return info['thumbnail']
         
-        frames_output_dir = self.frames_dir / video_id
-        frames_output_dir.mkdir(parents=True, exist_ok=True)
-        
-        cap = cv2.VideoCapture(video_path)
-        
-        if not cap.isOpened():
-            raise ValueError(f"Cannot open video: {video_path}")
-        
-        video_fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames / video_fps
-        
-        # Calculate frame interval
-        frame_interval = int(video_fps / fps)
-        
-        extracted_frames = []
-        frame_count = 0
-        saved_count = 0
-        
-        while True:
-            ret, frame = cap.read()
-            
-            if not ret:
-                break
-            
-            # Extract every Nth frame
-            if frame_count % frame_interval == 0:
-                frame_path = frames_output_dir / f"frame_{saved_count:05d}.jpg"
-                cv2.imwrite(str(frame_path), frame)
+        # Platform-specific thumbnail extraction
+        if platform == 'youtube':
+            video_id = self.get_video_id(url)
+            if video_id:
+                return f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
                 
-                extracted_frames.append({
-                    'path': str(frame_path),
-                    'frame_number': frame_count,
-                    'timestamp': frame_count / video_fps
-                })
-                
-                saved_count += 1
-                
-                if saved_count >= max_frames:
-                    logger.warning(f"⚠️ Reached max frames limit ({max_frames})")
-                    break
-            
-            frame_count += 1
+        elif platform == 'vimeo':
+            video_id = self.get_video_id(url)
+            if video_id:
+                # Vimeo thumbnail requires API call, use yt-dlp info
+                thumbnails = info.get('thumbnails', [])
+                if thumbnails:
+                    # Get highest quality thumbnail
+                    best_thumb = max(thumbnails, key=lambda x: x.get('width', 0) * x.get('height', 0))
+                    return best_thumb.get('url')
         
-        cap.release()
-        
-        logger.info(f"✅ Extracted {saved_count} frames from {total_frames} total frames")
-        
-        return {
-            'frames': extracted_frames,
-            'total_extracted': saved_count,
-            'total_frames': total_frames,
-            'duration': duration,
-            'video_fps': video_fps,
-            'extraction_fps': fps,
-            'output_dir': str(frames_output_dir)
-        }
+        return None
     
-    def extract_audio(self, video_path: str, video_id: str) -> str:
+    def get_video_info(self, url: str) -> Dict:
         """
-        Extract audio from video
+        Get video info without downloading
         
         Args:
-            video_path: Path to video file
-            video_id: Unique identifier
+            url: Video URL
             
         Returns:
-            Path to extracted audio file
+            Dict with video metadata
         """
-        logger.info("🎵 Extracting audio...")
+        if not YT_DLP_AVAILABLE:
+            raise ImportError("yt-dlp is not installed")
         
-        audio_path = self.audio_dir / f"{video_id}.wav"
-        
-        # Use ffmpeg via subprocess
-        import subprocess
-        
-        cmd = [
-            'ffmpeg',
-            '-i', video_path,
-            '-vn',  # No video
-            '-acodec', 'pcm_s16le',  # PCM 16-bit
-            '-ar', '16000',  # 16kHz sample rate (good for Whisper)
-            '-ac', '1',  # Mono
-            '-y',  # Overwrite
-            str(audio_path)
-        ]
+        platform = self.detect_platform(url)
+        ydl_opts = self.get_platform_options(platform)
+        ydl_opts['skip_download'] = True
         
         try:
-            subprocess.run(cmd, check=True, capture_output=True)
-            logger.info(f"✅ Audio extracted to: {audio_path}")
-            return str(audio_path)
-        except subprocess.CalledProcessError as e:
-            logger.error(f"❌ Audio extraction failed: {e}")
-            raise
-    
-    def get_video_info(self, video_path: str) -> Dict:
-        """Get basic video information"""
-        cap = cv2.VideoCapture(video_path)
-        
-        if not cap.isOpened():
-            raise ValueError(f"Cannot open video: {video_path}")
-        
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        duration = frame_count / fps if fps > 0 else 0
-        
-        cap.release()
-        
-        return {
-            'fps': fps,
-            'frame_count': frame_count,
-            'width': width,
-            'height': height,
-            'duration': duration
-        }
-    
-    def cleanup(self, video_id: str):
-        """Clean up files for a video"""
-        import shutil
-        
-        # Remove video
-        for ext in ['mp4', 'webm', 'mkv']:
-            video_file = self.videos_dir / f"{video_id}.{ext}"
-            if video_file.exists():
-                video_file.unlink()
-        
-        # Remove frames
-        frames_dir = self.frames_dir / video_id
-        if frames_dir.exists():
-            shutil.rmtree(frames_dir)
-        
-        # Remove audio
-        audio_file = self.audio_dir / f"{video_id}.wav"
-        if audio_file.exists():
-            audio_file.unlink()
-        
-        logger.info(f"🗑️ Cleaned up files for video {video_id}")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+                return {
+                    'title': info.get('title', 'Unknown'),
+                    'duration': info.get('duration', 0),
+                    'uploader': info.get('uploader', 'Unknown'),
+                    'thumbnail': self._get_thumbnail_url(url, info, platform),
+                    'description': info.get('description', ''),
+                    'platform': platform,
+                    'platform_id': self.get_video_id(url),
+                    'is_available': True,
+                }
+                
+        except Exception as e:
+            logger.error(f"Failed to get video info: {e}")
+            return {
+                'is_available': False,
+                'error': str(e),
+                'platform': platform,
+            }

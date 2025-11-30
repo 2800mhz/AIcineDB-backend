@@ -70,11 +70,11 @@ class SupabaseSyncService:
         return slug
     
     def _get_thumbnail(self, url: str) -> Optional[str]:
-        """Extract thumbnail URL from video URL."""
+        """Get thumbnail URL for video"""
         if not url:
             return None
         
-        # Try to extract YouTube video ID and construct thumbnail URL
+        # YouTube patterns
         youtube_patterns = [
             r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})',
         ]
@@ -82,9 +82,23 @@ class SupabaseSyncService:
         for pattern in youtube_patterns:
             match = re.search(pattern, url)
             if match:
+                video_id = match. group(1)
+                return f"https://img.youtube. com/vi/{video_id}/maxresdefault.jpg"
+        
+        # Vimeo patterns
+        vimeo_patterns = [
+            r'vimeo\.com/(\d+)',
+            r'vimeo\.com/video/(\d+)',
+            r'player\. vimeo\.com/video/(\d+)',
+        ]
+        
+        for pattern in vimeo_patterns:
+            match = re. search(pattern, url)
+            if match:
                 video_id = match.group(1)
-                # Return high quality YouTube thumbnail
-                return f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+                # Vimeo thumbnails need API call, return placeholder
+                # Frontend should handle Vimeo thumbnail fetching
+                return f"https://vumbnail.com/{video_id}.jpg"
         
         return None
     
