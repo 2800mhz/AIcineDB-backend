@@ -4,9 +4,13 @@ Syncs analyzed films to Supabase database for Lovable frontend (cineai-showcase 
 """
 import os
 import re
+import json
 import logging
 from typing import Dict, Optional
 from datetime import datetime
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import httpx
 
@@ -18,9 +22,9 @@ class SupabaseSyncService:
     
     def __init__(self):
         """
-        Initialize the Supabase sync service.
+        Initialize the Supabase sync service. 
         Reads SUPABASE_URL and SUPABASE_SERVICE_KEY from environment variables.
-        If not configured, sync operations will be disabled.
+        If not configured, sync operations will be disabled. 
         """
         self.supabase_url = os.getenv("SUPABASE_URL")
         self.supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
@@ -40,15 +44,7 @@ class SupabaseSyncService:
             logger.warning("⚠ Supabase sync disabled: SUPABASE_URL or SUPABASE_SERVICE_KEY not configured")
     
     def _generate_slug(self, title: str) -> str:
-        """
-        Create a URL-friendly slug from the title.
-        
-        Args:
-            title: Film title
-            
-        Returns:
-            URL-friendly slug
-        """
+        """Create a URL-friendly slug from the title."""
         if not title:
             return "untitled"
         
@@ -74,15 +70,7 @@ class SupabaseSyncService:
         return slug
     
     def _get_thumbnail(self, url: str) -> Optional[str]:
-        """
-        Extract thumbnail URL from video URL.
-        
-        Args:
-            url: Original video URL
-            
-        Returns:
-            Thumbnail URL or None
-        """
+        """Extract thumbnail URL from video URL."""
         if not url:
             return None
         
@@ -98,8 +86,166 @@ class SupabaseSyncService:
                 # Return high quality YouTube thumbnail
                 return f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
         
-        # If not YouTube, return None and let the frontend handle missing thumbnails
         return None
+    
+    def _extract_genres(self, narrative: Dict, style: Dict) -> list:
+        """Extract genres from narrative analysis and visual style."""
+        genres = []
+        
+        # From narrative genre field
+        if narrative.get('genre'):
+            genre_value = narrative['genre']
+            if isinstance(genre_value, list):
+                genres.extend(genre_value)
+            elif isinstance(genre_value, str):
+                genres.append(genre_value)
+        
+        # From style fingerprint (e.g., "3d-realistic-documentary")
+        style_fingerprint = style.get('fingerprint', '')
+        if style_fingerprint:
+            if 'documentary' in style_fingerprint.lower():
+                if 'Documentary' not in genres:
+                    genres.append('Documentary')
+            if 'dramatic' in style_fingerprint.lower():
+                if 'Drama' not in genres:
+                    genres.append('Drama')
+        
+        # Default if empty
+        if not genres:
+            genres = ['Uncategorized']
+        
+        return genres[:5]  # Limit to 5
+    
+    def _extract_moods(self, narrative: Dict, audio_features: Dict) -> list:
+        """Extract moods from narrative and audio analysis."""
+        moods = []
+        
+        # From audio mood
+        if audio_features.get('mood'):
+            moods.append(audio_features['mood'])
+        
+        # From narrative tone
+        if narrative.get('tone'):
+            tone_value = narrative['tone']
+            if isinstance(tone_value, list):
+                moods.extend(tone_value)
+            elif isinstance(tone_value, str) and tone_value not in moods:
+                moods.append(tone_value)
+        
+        # From emotional arc
+        if narrative.get('emotional_arc'):
+            arc = narrative['emotional_arc']
+            if isinstance(arc, str) and arc not in moods:
+                moods.append(arc)
+        
+        # Default if empty
+        if not moods:
+            moods = ['Neutral']
+        
+        return moods[:5]  # Limit to 5
+    
+    def _extract_tags(self, narrative: Dict, film_data: Dict) -> list:
+        """Extract tags from themes and other metadata."""
+        tags = []
+        
+        # From narrative themes
+        if narrative.get('themes'):
+            themes = narrative['themes']
+            if isinstance(themes, list):
+                tags.extend(themes)
+        
+        # From key quotes (extract keywords)
+        if narrative.get('key_quotes'):
+            tags.append('Quotable')
+        
+        # From character count
+        if len(film_data.get('characters', [])) > 10:
+            tags.append('Ensemble Cast')
+        
+        # From shot count (visual complexity)
+        if len(film_data.get('shots', [])) > 50:
+            tags.append('Visually Complex')
+        
+        # Default if empty
+        if not tags:
+            tags = ['AI Analyzed']
+        
+        return tags[:10]  # Limit to 10
+    
+    def _generate_logline(self, narrative: Dict, title: str) -> str:
+        """Generate a logline from narrative or create a default."""
+        # Try to get from narrative
+        if narrative.get('summary'):
+            return narrative['summary']
+        
+        if narrative.get('logline'):
+            return narrative['logline']
+        
+        # Try to build from available data
+        if narrative.get('character_analysis', {}).get('protagonist'):
+            protagonist = narrative['character_analysis']['protagonist']
+            return f"A story following {protagonist}."
+        
+        # Default
+        return f"AI-analyzed content: {title}"
+    
+    def _generate_description(self, narrative: Dict, film_data: Dict) -> str:
+        """Generate a description from narrative analysis."""
+        parts = []
+        
+        # Add summary if available
+        if narrative.get('summary'):
+            parts.append(narrative['summary'])
+        
+        # Add cinematography notes
+        if narrative.get('cinematography_notes'):
+            parts.append(f"Visual Style: {narrative['cinematography_notes']}")
+        
+        # Add structure info
+        if narrative.get('structure', {}).get('act1'):
+            parts.append(f"The story begins with {narrative['structure']['act1']}")
+        
+        # Add technical info
+        shots = len(film_data.get('shots', []))
+        characters = len(film_data.get('characters', []))
+        scenes = len(film_data.get('scenes', []))
+        
+        if shots or characters or scenes:
+            parts.append(f"Technical: {shots} shots, {characters} characters, {scenes} scenes detected.")
+        
+        if parts:
+            return " ".join(parts)
+        
+        return f"AI-analyzed video content with detailed shot and character analysis."
+    
+    def _calculate_initial_rating(self, film_data: Dict) -> float:
+        """Calculate an initial rating based on analysis quality."""
+        score = 5.0  # Base score
+        
+        narrative = film_data.get('narrative') or {}
+        
+        # Bonus for having narrative analysis
+        if narrative.get('summary'):
+            score += 1.0
+        
+        # Bonus for themes
+        if narrative.get('themes') and len(narrative['themes']) >= 3:
+            score += 0.5
+        
+        # Bonus for detailed structure
+        if narrative.get('structure'):
+            score += 0.5
+        
+        # Bonus for character analysis
+        if len(film_data.get('characters', [])) > 5:
+            score += 0.5
+        
+        # Bonus for visual complexity
+        if len(film_data.get('shots', [])) > 20:
+            score += 0.5
+        
+        # Cap at 10
+        return min(score, 10.0)
     
     def _map_analysis_to_title(self, film_data: Dict) -> Dict:
         """
@@ -111,9 +257,10 @@ class SupabaseSyncService:
         Returns:
             Dictionary matching the Supabase titles table schema
         """
-        # Extract narrative data if available
+        # Extract components
         narrative = film_data.get('narrative') or {}
         audio_features = film_data.get('audio_features') or {}
+        style = film_data.get('style') or {}
         shots = film_data.get('shots') or []
         characters = film_data.get('characters') or []
         scenes = film_data.get('scenes') or []
@@ -124,45 +271,29 @@ class SupabaseSyncService:
         
         # Convert duration from seconds to minutes
         duration_seconds = film_data.get('duration', 0)
-        duration_minutes = int(duration_seconds / 60) if duration_seconds else None
+        duration_minutes = int(duration_seconds / 60) if duration_seconds else 1
         
-        # Extract genres from narrative (limit to 5)
-        genres = []
-        if narrative.get('genre'):
-            genre_value = narrative['genre']
-            if isinstance(genre_value, list):
-                genres = genre_value[:5]
-            elif isinstance(genre_value, str):
-                genres = [genre_value]
+        # Extract rich metadata
+        genres = self._extract_genres(narrative, style)
+        moods = self._extract_moods(narrative, audio_features)
+        tags = self._extract_tags(narrative, film_data)
+        logline = self._generate_logline(narrative, title)
+        description = self._generate_description(narrative, film_data)
         
-        # Extract moods from audio mood + narrative tone (limit to 5)
-        moods = []
-        if audio_features.get('mood'):
-            moods.append(audio_features['mood'])
-        if narrative.get('tone'):
-            tone_value = narrative['tone']
-            if isinstance(tone_value, list):
-                moods.extend(tone_value)
-            elif isinstance(tone_value, str) and tone_value not in moods:
-                moods.append(tone_value)
-        moods = moods[:5]
+        # Get uploader as production company
+        production_company = film_data.get('uploader') or 'Independent'
         
-        # Extract tags from narrative themes (limit to 10)
-        tags = []
-        if narrative.get('themes'):
-            themes = narrative['themes']
-            if isinstance(themes, list):
-                tags = themes[:10]
+        # Calculate initial rating
+        initial_rating = self._calculate_initial_rating(film_data)
         
-        # Get logline and description
-        logline = narrative.get('summary') or narrative.get('logline') or None
-        description = narrative.get('synopsis') or logline
-        
-        # Get thumbnail/poster URL
-        poster_url = self._get_thumbnail(film_data.get('url'))
-        
-        # Get year from metadata or use current year as fallback
+        # Get year from metadata or use current year
         year = film_data.get('year') or datetime.now().year
+        
+        # Get dominant color from color palette
+        color_palette = film_data.get('color_palette') or {}
+        dominant_color = None
+        if color_palette.get('palette'):
+            dominant_color = color_palette['palette'][0] if color_palette['palette'] else None
         
         # Build the title record for Supabase
         title_record = {
@@ -173,13 +304,19 @@ class SupabaseSyncService:
             "duration": duration_minutes,
             "logline": logline,
             "description": description,
-            "poster_url": poster_url,
+            "poster_url": self._get_thumbnail(film_data.get('url')),
             "trailer_youtube_url": film_data.get('url') if 'youtube' in (film_data.get('url') or '').lower() else None,
             "status": "completed",
-            "genres": genres if genres else None,
-            "moods": moods if moods else None,
-            "tags": tags if tags else None,
-            "ai_model": "AIcineDB Analyzer",
+            "genres": genres,
+            "moods": moods,
+            "tags": tags,
+            "ai_model": "AIcineDB Analyzer v1.0",
+            "production_company": production_company,
+            "rating_average": initial_rating,
+            "rating_count": 1,  # Start with 1 (AI rating)
+            "view_count": 0,
+            "trending_score": 50,  # Neutral starting score
+            "dominant_color": dominant_color,
             "aicinedb_film_id": str(film_data.get('job_id')),
             "style_fingerprint": film_data.get('style_fingerprint'),
             "shot_count": len(shots),
@@ -192,7 +329,7 @@ class SupabaseSyncService:
     
     async def sync_film(self, film_data: Dict) -> Optional[Dict]:
         """
-        Sync a film analysis to Supabase.
+        Sync a film analysis to Supabase. 
         Performs upsert based on aicinedb_film_id using Supabase's native upsert.
         
         Args:
@@ -212,21 +349,28 @@ class SupabaseSyncService:
             # Map the analysis data to Supabase schema
             title_record = self._map_analysis_to_title(film_data)
             
+            # Log what we're sending
+            logger.info(f"📤 Sending to Supabase: genres={title_record.get('genres')}, moods={title_record.get('moods')}, rating={title_record.get('rating_average')}")
+            
             async with httpx.AsyncClient(timeout=30.0) as client:
                 # Use Supabase's native upsert with on_conflict
                 upsert_url = f"{self.rest_url}/titles"
                 
-                # Set headers for upsert operation
+                # Set headers for upsert operation with UTF-8 encoding
                 upsert_headers = {
                     **self.headers,
-                    "Prefer": "return=representation,resolution=merge-duplicates"
+                    "Prefer": "return=representation,resolution=merge-duplicates",
+                    "Content-Type": "application/json; charset=utf-8"
                 }
+                
+                # Ensure proper JSON encoding for Turkish characters
+                json_data = json.dumps(title_record, ensure_ascii=False)
                 
                 response = await client.post(
                     upsert_url,
                     headers=upsert_headers,
                     params={"on_conflict": "aicinedb_film_id"},
-                    json=title_record
+                    content=json_data.encode('utf-8')
                 )
                 response.raise_for_status()
                 result = response.json()

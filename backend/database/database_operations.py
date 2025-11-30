@@ -1,5 +1,5 @@
 """
-Database operations for AIcineDB - FIXED for pgvector
+Database operations for AIcineDB - FIXED for pgvector + duplicate URL handling
 """
 import logging
 from typing import Dict, List, Optional, Any
@@ -27,14 +27,13 @@ class DatabaseOperations:
             return None
         
         # Convert to list if numpy array
-        if isinstance(embedding, np.ndarray):
+        if isinstance(embedding, np. ndarray):
             embedding = embedding.tolist()
         elif not isinstance(embedding, list):
             logger.warning(f"Unexpected embedding type: {type(embedding)}")
             return None
         
         # Convert to pgvector string format
-        # Format: '[0.1, 0.2, 0.3, ...]'
         embedding_str = '[' + ','.join(str(float(x)) for x in embedding) + ']'
         
         return embedding_str
@@ -55,7 +54,6 @@ class DatabaseOperations:
     ):
         """Update job status - FIXED VERSION"""
         
-        # Build the UPDATE query parts
         updates = ["status = :status"]
         values = {"job_id": job_id, "status": status}
         
@@ -72,37 +70,53 @@ class DatabaseOperations:
             values["film_id"] = film_id
         
         if error_message is not None:
-            updates.append("error_message = :error_message")
+            updates. append("error_message = :error_message")
             values["error_message"] = error_message
         
         if celery_task_id is not None:
             updates.append("celery_task_id = :celery_task_id")
             values["celery_task_id"] = celery_task_id
         
-        # Add timestamp updates based on status
         if status == 'processing':
-            updates.append("started_at = NOW()")
+            updates. append("started_at = NOW()")
         elif status in ['completed', 'failed']:
             updates.append("completed_at = NOW()")
         
-        updates.append("updated_at = NOW()")
+        updates. append("updated_at = NOW()")
         
-        # Build final query
         query = f"""
             UPDATE analysis_jobs
-            SET {', '.join(updates)}
+            SET {', '. join(updates)}
             WHERE id = :job_id
         """
         
-        # Execute with named parameters
-        await self.db.execute(query=query, values=values)
+        await self.db. execute(query=query, values=values)
     
     # ============================================================================
     # FILMS
     # ============================================================================
     
     async def create_film(self, analysis_result: Dict) -> int:
-        """Create film record from analysis result"""
+        """Create or replace film record from analysis result"""
+        
+        url = analysis_result. get('url')
+        
+        # ✅ CHECK IF FILM WITH THIS URL ALREADY EXISTS - DELETE IT FIRST
+        existing = await self.db. fetch_one(
+            "SELECT id FROM films WHERE url = :url",
+            values={"url": url}
+        )
+        
+        if existing:
+            old_film_id = existing['id']
+            logger.warning(f"⚠️ Film already exists with URL, deleting old record (id: {old_film_id})")
+            
+            # Delete old film and all related records (CASCADE should handle this)
+            await self.db. execute(
+                "DELETE FROM films WHERE id = :film_id",
+                values={"film_id": old_film_id}
+            )
+            logger.info(f"✓ Deleted old film record: {old_film_id}")
         
         # Extract basic metadata
         metadata = {
@@ -110,22 +124,19 @@ class DatabaseOperations:
             'upload_date': analysis_result.get('upload_date'),
             'view_count': analysis_result.get('view_count'),
             'like_count': analysis_result.get('like_count'),
-            'description': analysis_result.get('description'),
+            'description': analysis_result. get('description'),
             'tags': analysis_result.get('tags', []),
-            'style': analysis_result.get('style', {}),
+            'style': analysis_result. get('style', {}),
             'style_fingerprint': analysis_result.get('style_fingerprint'),
-            'shot_statistics': analysis_result.get('shot_statistics', {})
+            'shot_statistics': analysis_result. get('shot_statistics', {})
         }
         
-        # FIXED: Prepare embeddings in pgvector string format
+        # Prepare embeddings in pgvector string format
         visual_emb = self._prepare_embedding(analysis_result.get('visual_embedding'))
         text_emb = self._prepare_embedding(analysis_result.get('text_embedding'))
         audio_emb = self._prepare_embedding(analysis_result.get('audio_embedding'))
         
         logger.info(f"💾 Saving film: {analysis_result.get('title')}")
-        logger.debug(f"Visual embedding: {visual_emb[:50] if visual_emb else None}...")
-        logger.debug(f"Text embedding: {text_emb[:50] if text_emb else None}...")
-        logger.debug(f"Audio embedding: {audio_emb[:50] if audio_emb else None}...")
         
         query = """
             INSERT INTO films (
@@ -138,13 +149,13 @@ class DatabaseOperations:
             RETURNING id
         """
         
-        result = await self.db.fetch_one(
+        result = await self. db.fetch_one(
             query=query,
             values={
                 "title": analysis_result.get('title'),
                 "url": analysis_result.get('url'),
                 "duration": analysis_result.get('duration'),
-                "uploader": metadata.get('uploader'),
+                "uploader": metadata. get('uploader'),
                 "metadata": json.dumps(metadata),
                 "visual_emb": visual_emb,
                 "text_emb": text_emb,
@@ -157,7 +168,7 @@ class DatabaseOperations:
         
         # Create related records
         await self._create_shots(film_id, analysis_result.get('shots', []))
-        await self._create_characters(film_id, analysis_result.get('characters', []))
+        await self._create_characters(film_id, analysis_result. get('characters', []))
         await self._create_scenes(film_id, analysis_result.get('scenes', []))
         await self._create_narrative(film_id, analysis_result.get('narrative'))
         await self._create_transcript(film_id, analysis_result.get('transcript', {}))
@@ -175,7 +186,6 @@ class DatabaseOperations:
         
         result = dict(film)
         
-        # Get related data
         result['shots'] = await self._get_shots(film_id)
         result['characters'] = await self._get_characters(film_id)
         result['scenes'] = await self._get_scenes(film_id)
@@ -234,9 +244,9 @@ class DatabaseOperations:
                     "start_time": shot['start_time'],
                     "end_time": shot['end_time'],
                     "duration": shot['duration'],
-                    "shot_type": shot.get('shot_type'),
+                    "shot_type": shot. get('shot_type'),
                     "lighting": shot.get('lighting'),
-                    "brightness": shot.get('brightness'),
+                    "brightness": shot. get('brightness'),
                     "colors": shot.get('colors', []),
                     "keyframe_path": shot.get('keyframe_path')
                 }
@@ -250,7 +260,6 @@ class DatabaseOperations:
         logger.info(f"💾 Saving {len(characters)} characters...")
         
         for char in characters:
-            # FIXED: Convert face embedding to pgvector string format
             face_emb = self._prepare_embedding(char.get('face_embedding'))
             
             query = """
@@ -269,7 +278,7 @@ class DatabaseOperations:
                 values={
                     "film_id": film_id,
                     "character_id": char['character_id'],
-                    "name": char.get('name'),
+                    "name": char. get('name'),
                     "role": char.get('role'),
                     "screen_time": char.get('screen_time', 0),
                     "total_appearances": char.get('total_appearances', 0),
@@ -284,7 +293,7 @@ class DatabaseOperations:
         if not scenes:
             return
         
-        logger.info(f"💾 Saving {len(scenes)} scenes...")
+        logger. info(f"💾 Saving {len(scenes)} scenes...")
         
         for scene in scenes:
             query = """
@@ -296,7 +305,7 @@ class DatabaseOperations:
                         :lighting, :emotion, :pacing, :description)
             """
             
-            await self.db.execute(
+            await self. db.execute(
                 query=query,
                 values={
                     "film_id": film_id,
@@ -312,11 +321,31 @@ class DatabaseOperations:
             )
     
     async def _create_narrative(self, film_id: int, narrative: Dict):
-        """Create narrative record"""
+        """Create narrative record - FIXED VERSION"""
         if not narrative:
             return
         
         logger.info(f"💾 Saving narrative analysis...")
+        
+        def to_json_string(value):
+            """Convert any value to JSON string for TEXT columns"""
+            if value is None:
+                return None
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (list, dict)):
+                return json.dumps(value)
+            return str(value)
+        
+        logline = narrative.get('logline') or narrative.get('summary') or None
+        synopsis = narrative.get('synopsis') or narrative.get('summary') or None
+        themes = to_json_string(narrative.get('themes', []))
+        genre = to_json_string(narrative.get('genre', []))
+        tone = to_json_string(narrative.get('tone', []))
+        conflict_type = narrative.get('conflict_type')
+        emotional_arc = to_json_string(narrative.get('emotional_arc', []))
+        story_beats = to_json_string(narrative.get('story_beats', []))
+        act_structure = to_json_string(narrative.get('act_structure') or narrative.get('structure', {}))
         
         query = """
             INSERT INTO narratives (
@@ -331,15 +360,15 @@ class DatabaseOperations:
             query=query,
             values={
                 "film_id": film_id,
-                "logline": narrative.get('logline'),
-                "synopsis": narrative.get('synopsis'),
-                "themes": json.dumps(narrative.get('themes', [])),
-                "genre": narrative.get('genre', []),
-                "tone": narrative.get('tone', []),
-                "conflict_type": narrative.get('conflict_type'),
-                "emotional_arc": narrative.get('emotional_arc', []),
-                "story_beats": json.dumps(narrative.get('story_beats', [])),
-                "act_structure": json.dumps(narrative.get('act_structure', {}))
+                "logline": logline,
+                "synopsis": synopsis,
+                "themes": themes,
+                "genre": genre,
+                "tone": tone,
+                "conflict_type": conflict_type,
+                "emotional_arc": emotional_arc,
+                "story_beats": story_beats,
+                "act_structure": act_structure
             }
         )
     
@@ -348,7 +377,7 @@ class DatabaseOperations:
         if not transcript:
             return
         
-        logger.info(f"💾 Saving transcript...")
+        logger. info(f"💾 Saving transcript...")
         
         query = """
             INSERT INTO transcripts (
@@ -363,8 +392,8 @@ class DatabaseOperations:
                 "film_id": film_id,
                 "text": transcript.get('text'),
                 "language": transcript.get('language'),
-                "word_count": transcript.get('word_count'),
-                "segments": json.dumps(transcript.get('segments', []))
+                "word_count": transcript. get('word_count'),
+                "segments": json.dumps(transcript. get('segments', []))
             }
         )
     
@@ -384,12 +413,12 @@ class DatabaseOperations:
                     :avg_energy, :spectral_brightness, :speech_ratio)
         """
         
-        await self.db.execute(
+        await self.db. execute(
             query=query,
             values={
                 "film_id": film_id,
                 "tempo": audio_features.get('tempo'),
-                "mood": audio_features.get('mood'),
+                "mood": audio_features. get('mood'),
                 "intensity": audio_features.get('intensity'),
                 "pacing": audio_features.get('pacing'),
                 "avg_energy": audio_features.get('avg_energy'),
@@ -401,7 +430,7 @@ class DatabaseOperations:
     # Getter methods
     async def _get_shots(self, film_id: int) -> List[Dict]:
         query = "SELECT * FROM shots WHERE film_id = :film_id ORDER BY shot_number"
-        results = await self.db.fetch_all(query, values={"film_id": film_id})
+        results = await self.db. fetch_all(query, values={"film_id": film_id})
         return [dict(row) for row in results]
     
     async def _get_characters(self, film_id: int) -> List[Dict]:
@@ -416,7 +445,7 @@ class DatabaseOperations:
     
     async def _get_narrative(self, film_id: int) -> Dict:
         query = "SELECT * FROM narratives WHERE film_id = :film_id"
-        result = await self.db.fetch_one(query, values={"film_id": film_id})
+        result = await self. db.fetch_one(query, values={"film_id": film_id})
         return dict(result) if result else {}
     
     async def _get_transcript(self, film_id: int) -> Dict:
