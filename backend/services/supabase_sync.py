@@ -72,7 +72,10 @@ class SupabaseSyncService:
     def _get_thumbnail(self, url: str) -> Optional[str]:
         """Get thumbnail URL for video"""
         if not url:
+            logger.debug("No URL provided for thumbnail")
             return None
+        
+        logger.debug(f"Getting thumbnail for URL: {url}")
         
         # YouTube patterns
         youtube_patterns = [
@@ -82,24 +85,27 @@ class SupabaseSyncService:
         for pattern in youtube_patterns:
             match = re.search(pattern, url)
             if match:
-                video_id = match. group(1)
-                return f"https://img.youtube. com/vi/{video_id}/maxresdefault.jpg"
+                video_id = match.group(1)
+                thumbnail_url = f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+                logger.debug(f"Found YouTube thumbnail: {thumbnail_url}")
+                return thumbnail_url
         
         # Vimeo patterns
         vimeo_patterns = [
             r'vimeo\.com/(\d+)',
             r'vimeo\.com/video/(\d+)',
-            r'player\. vimeo\.com/video/(\d+)',
+            r'player\.vimeo\.com/video/(\d+)',
         ]
         
         for pattern in vimeo_patterns:
-            match = re. search(pattern, url)
+            match = re.search(pattern, url)
             if match:
                 video_id = match.group(1)
-                # Vimeo thumbnails need API call, return placeholder
-                # Frontend should handle Vimeo thumbnail fetching
-                return f"https://vumbnail.com/{video_id}.jpg"
+                thumbnail_url = f"https://vumbnail.com/{video_id}.jpg"
+                logger.debug(f"Found Vimeo thumbnail: {thumbnail_url}")
+                return thumbnail_url
         
+        logger.warning(f"No thumbnail pattern matched for URL: {url}")
         return None
     
     def _extract_genres(self, narrative: Dict, style: Dict) -> list:
@@ -110,9 +116,17 @@ class SupabaseSyncService:
         if narrative.get('genre'):
             genre_value = narrative['genre']
             if isinstance(genre_value, list):
-                genres.extend(genre_value)
+                genres.extend([str(g) for g in genre_value])
             elif isinstance(genre_value, str):
-                genres.append(genre_value)
+                try:
+                    # Try to parse if it's a JSON string
+                    parsed = json.loads(genre_value)
+                    if isinstance(parsed, list):
+                        genres.extend([str(g) for g in parsed])
+                    else:
+                        genres.append(str(genre_value))
+                except (json.JSONDecodeError, TypeError):
+                    genres.append(str(genre_value))
         
         # From style fingerprint (e.g., "3d-realistic-documentary")
         style_fingerprint = style.get('fingerprint', '')
@@ -136,21 +150,38 @@ class SupabaseSyncService:
         
         # From audio mood
         if audio_features.get('mood'):
-            moods.append(audio_features['mood'])
+            mood_val = audio_features['mood']
+            if isinstance(mood_val, str):
+                moods.append(mood_val)
         
         # From narrative tone
         if narrative.get('tone'):
             tone_value = narrative['tone']
             if isinstance(tone_value, list):
-                moods.extend(tone_value)
-            elif isinstance(tone_value, str) and tone_value not in moods:
-                moods.append(tone_value)
+                moods.extend([str(t) for t in tone_value])
+            elif isinstance(tone_value, str):
+                try:
+                    # Try to parse if it's a JSON string
+                    parsed = json.loads(tone_value)
+                    if isinstance(parsed, list):
+                        moods.extend([str(t) for t in parsed])
+                    elif str(tone_value) not in moods:
+                        moods.append(str(tone_value))
+                except (json.JSONDecodeError, TypeError):
+                    if str(tone_value) not in moods:
+                        moods.append(str(tone_value))
         
         # From emotional arc
         if narrative.get('emotional_arc'):
             arc = narrative['emotional_arc']
-            if isinstance(arc, str) and arc not in moods:
-                moods.append(arc)
+            if isinstance(arc, str):
+                try:
+                    parsed = json.loads(arc)
+                    if isinstance(parsed, str) and parsed not in moods:
+                        moods.append(parsed)
+                except (json.JSONDecodeError, TypeError):
+                    if arc not in moods:
+                        moods.append(arc)
         
         # Default if empty
         if not moods:
@@ -166,7 +197,16 @@ class SupabaseSyncService:
         if narrative.get('themes'):
             themes = narrative['themes']
             if isinstance(themes, list):
-                tags.extend(themes)
+                tags.extend([str(t) for t in themes])
+            elif isinstance(themes, str):
+                try:
+                    parsed = json.loads(themes)
+                    if isinstance(parsed, list):
+                        tags.extend([str(t) for t in parsed])
+                    else:
+                        tags.append(str(themes))
+                except (json.JSONDecodeError, TypeError):
+                    tags.append(str(themes))
         
         # From key quotes (extract keywords)
         if narrative.get('key_quotes'):
