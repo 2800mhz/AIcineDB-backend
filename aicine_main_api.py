@@ -131,20 +131,25 @@ async def root():
 # ANALYSIS ENDPOINTS
 # ============================================================================
 
-@app.post("/api/analyze", response_model=AnalysisJobResponse, status_code=202)
+@app. post("/api/analyze", response_model=AnalysisJobResponse, status_code=202)
 async def submit_analysis(request: AnalysisRequest):
     """Submit a video URL for analysis"""
     try:
+        # ✅ DEBUG: Request'i kontrol et
+        logger.info(f"🔍 Request received:")
+        logger.info(f"   - URL: {request.url}")
+        logger.info(f"   - title_id: {request.title_id} (type: {type(request. title_id)})")
+        logger.info(f"   - priority: {request.priority}")
+        
         async with get_db() as db:
-            # ✅ Priority mapping (string -> int)
             priority_map = {
                 "low": 1,
                 "normal": 5,
                 "high": 10
             }
-            priority_value = priority_map.get(request.priority, 5)  # Default: normal
+            priority_value = priority_map.get(request.priority, 5)
             
-            # Create analysis job
+            # Create job
             job = await db.fetch_one(
                 query="""
                 INSERT INTO analysis_jobs (url, status, priority)
@@ -153,20 +158,23 @@ async def submit_analysis(request: AnalysisRequest):
                 """,
                 values={
                     "url": str(request.url), 
-                    "priority": priority_value  # ✅ Integer olarak gönder
+                    "priority": priority_value
                 }
             )
             
-            # title_id'yi al
-            title_id = getattr(request, 'title_id', None)
+            # ✅ title_id'yi al
+            title_id = request.title_id
+            
+            # ✅ DEBUG: title_id değerini kontrol et
+            logger.info(f"🔍 title_id from request: {title_id} (type: {type(title_id)})")
             
             # Task'ı çağır
             from backend.tasks.video_tasks import analyze_film_complete
             
             task = analyze_film_complete.delay(
                 job['id'], 
-                str(request. url),
-                title_id=title_id
+                str(request.url),
+                title_id=title_id  # ✅ title_id gönder
             )
             
             logger.info(f"📥 Created job {job['id']} (title_id: {title_id}, priority: {priority_value})")
@@ -176,11 +184,11 @@ async def submit_analysis(request: AnalysisRequest):
                 status=job['status'],
                 url=str(request.url),
                 created_at=job['created_at'],
-                celery_task_id=task.id
+                celery_task_id=task. id
             )
             
     except Exception as e:
-        logger. error(f"Failed to create job: {e}")
+        logger.error(f"Failed to create job: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/jobs/{job_id}", response_model=AnalysisJobResponse)
