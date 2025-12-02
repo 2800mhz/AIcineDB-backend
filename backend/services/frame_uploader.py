@@ -62,7 +62,7 @@ class FrameUploader:
             all_files = list(keyframes_path.glob("*.*"))
             logger.warning(f"📂 Directory contains {len(all_files)} files:")
             for f in all_files[:10]:  # Show first 10
-                logger.warning(f"   - {f.name}")
+                logger.warning(f"  - {f.name}")
             
             return []
         
@@ -76,8 +76,8 @@ class FrameUploader:
                 with open(keyframe_path, 'rb') as f:
                     file_data = f.read()
                 
-                # Storage path: {title_id}/shot_{idx:04d}.jpg
-                storage_path = f"{title_id}/shot_{idx:04d}.jpg"
+                # Storage path: title-frames/{title_id}/shot_{idx:04d}.jpg
+                storage_path = f"title-frames/{title_id}/shot_{idx:04d}.jpg"
                 
                 # Upload to Supabase Storage
                 self.supabase.storage.from_('title-frames').upload(
@@ -117,10 +117,10 @@ class FrameUploader:
                 
                 # ✅ Log every 10th frame to avoid spam
                 if idx % 10 == 0 or idx == len(keyframe_files):
-                    logger.info(f"   ✅ Uploaded {idx}/{len(keyframe_files)} frames")
+                    logger.info(f"  ✅ Uploaded {idx}/{len(keyframe_files)} frames")
                 
             except Exception as e:
-                logger.error(f"   ❌ Failed to upload frame {idx} ({keyframe_path.name}): {e}")
+                logger.error(f"  ❌ Failed to upload frame {idx} ({keyframe_path.name}): {e}")
                 continue
         
         logger.info(f"🎉 Uploaded {len(uploaded_frames)}/{len(keyframe_files)} frames successfully")

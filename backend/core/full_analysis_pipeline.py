@@ -52,7 +52,7 @@ class FullAnalysisPipeline:
         self,
         url: str,
         job_id: int,
-        title_id: Optional[str] = None, # ✅ Yeni parametre eklendi
+        title_id: Optional[str] = None,
         progress_callback=None
     ) -> Dict:
         """
@@ -61,7 +61,7 @@ class FullAnalysisPipeline:
         Args:
             url: Video URL
             job_id: Job ID for tracking
-            title_id: Optional title ID for database synchronization (used for keyframe upload) # ✅ Docstring güncellendi
+            title_id: Optional title ID for database synchronization (used for keyframe upload)
             progress_callback: Function to call with progress updates
             
         Returns:
@@ -108,8 +108,7 @@ class FullAnalysisPipeline:
             
             shots = self.shot_detector.detect_shots(
                 video_path,
-                output_dir=str(keyframes_dir)  # ✅ Pass keyframes directory
-
+                output_dir=str(keyframes_dir)
             )
             
             shot_stats = self.shot_detector.calculate_shot_statistics(shots)
@@ -120,13 +119,12 @@ class FullAnalysisPipeline:
             logger.info(f"✅ Saved {keyframe_count} keyframes to {keyframes_dir}")
             
             # ============================================================
-            # ✅ YENİ: Upload Keyframes to Supabase (35-38%)
+            # STAGE 3.5: Upload Keyframes to Supabase (35-38%)
             # ============================================================
             if title_id:
                 try:
                     self._update_progress(progress_callback, 0.36, "📤 Uploading keyframes to Supabase...")
                     
-                    # Dinamik import, böylece FrameUploader sadece gerektiğinde yüklenir.
                     from backend.services.frame_uploader import FrameUploader
                     uploader = FrameUploader()
                     
@@ -146,7 +144,6 @@ class FullAnalysisPipeline:
             # ============================================================
             self._update_progress(progress_callback, 0.38, "🎨 Classifying visual style...")
             
-            # Get keyframe paths
             keyframe_paths = [s['keyframe_path'] for s in shots if s.get('keyframe_path')]
             
             style_result = self.style_classifier.classify_style(keyframe_paths)
@@ -291,11 +288,9 @@ class FullAnalysisPipeline:
             # ============================================================
             self._update_progress(progress_callback, 0.96, "💾 Saving to database...")
 
-            # ✅ IMPORT DatabaseOperations
             from backend.database.connection import get_task_db
             from backend.database.database_operations import DatabaseOperations
 
-            # ✅ Save to database
             async with get_task_db() as db:
                 db_ops = DatabaseOperations(db)
                 
@@ -304,7 +299,7 @@ class FullAnalysisPipeline:
                 
                 logger.info(f"💾 Film saved with ID: {film_id}")
                 
-                # ✅ Update analysis_result with film_id
+                # Update analysis_result with film_id
                 analysis_result['film_id'] = film_id
                 
                 # Update job with film_id
@@ -328,7 +323,6 @@ class FullAnalysisPipeline:
                     await self.supabase_sync.sync_film(analysis_result)
                     self._update_progress(progress_callback, 0.99, "✓ Synced to showcase platform")
                 except Exception as sync_error:
-                    # Log warning but don't fail the analysis
                     logger.warning(f"⚠ Supabase sync failed (non-critical): {sync_error}")
                     self._update_progress(progress_callback, 0.99, "⚠ Showcase sync skipped")
             
@@ -361,27 +355,21 @@ class FullAnalysisPipeline:
             shot = shots[i]
             prev_shot = shots[i - 1]
             
-            # Check if shot should be in same scene
-            # Simple heuristic: if time gap < 5s and similar lighting
             time_gap = shot['start_time'] - prev_shot['end_time']
             same_lighting = shot.get('lighting') == prev_shot.get('lighting')
             
             if time_gap < 5.0 and same_lighting:
-                # Continue current scene
                 current_scene['shots'].append(shot)
             else:
-                # Finish current scene and start new one
                 current_scene['end_time'] = prev_shot['end_time']
                 current_scene['duration'] = current_scene['end_time'] - current_scene['start_time']
                 current_scene['num_shots'] = len(current_scene['shots'])
                 
-                # Add scene properties
                 lightings = [s.get('lighting', 'unknown') for s in current_scene['shots']]
                 current_scene['lighting'] = max(set(lightings), key=lightings.count)
                 
                 scenes.append(current_scene)
                 
-                # Start new scene
                 current_scene = {
                     'scene_number': len(scenes) + 1,
                     'start_time': shot['start_time'],
