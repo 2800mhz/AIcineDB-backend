@@ -82,22 +82,20 @@ class SupabaseSyncService:
         for pattern in youtube_patterns:
             match = re.search(pattern, url)
             if match:
-                video_id = match. group(1)
-                return f"https://img.youtube. com/vi/{video_id}/maxresdefault.jpg"
+                video_id = match.group(1)
+                return f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
         
         # Vimeo patterns
         vimeo_patterns = [
             r'vimeo\.com/(\d+)',
             r'vimeo\.com/video/(\d+)',
-            r'player\. vimeo\.com/video/(\d+)',
+            r'player\.vimeo\.com/video/(\d+)',
         ]
         
         for pattern in vimeo_patterns:
-            match = re. search(pattern, url)
+            match = re.search(pattern, url)
             if match:
                 video_id = match.group(1)
-                # Vimeo thumbnails need API call, return placeholder
-                # Frontend should handle Vimeo thumbnail fetching
                 return f"https://vumbnail.com/{video_id}.jpg"
         
         return None
@@ -340,11 +338,83 @@ class SupabaseSyncService:
         
         # Remove None values to let Supabase use defaults
         return {k: v for k, v in title_record.items() if v is not None}
-    
+
+    async def _sync_cast_crew(self, title_id: str, film_data: Dict) -> None:
+        """
+        Sync cast & crew to Supabase title_cast table
+        
+        Args:
+            title_id: Supabase title UUID
+            film_data: Analysis result with cast/crew
+        """
+        if not self.enabled:
+            return
+        
+        try:
+            cast = film_data.get('cast', [])
+            crew = film_data.get('crew', [])
+            
+            if not cast and not crew:
+                logger.debug("No cast/crew to sync")
+                return
+            
+            # Combine cast & crew
+            all_people = []
+            
+            # Cast members
+            for i, member in enumerate(cast):
+                all_people.append({
+                    'title_id': title_id,
+                    'name': member.get('name', 'Unknown'),
+                    'character_name': member.get('role'),  # Character name
+                    'role': member.get('type', 'actor'),
+                    'department': 'acting',
+                    'ordering': i + 1,
+                    'screen_time': member.get('screen_time'),
+                    'appearance_count': member.get('appearance_count'),
+                })
+            
+            # Crew members
+            for i, member in enumerate(crew):
+                all_people.append({
+                    'title_id': title_id,
+                    'name': member.get('name', 'Unknown'),
+                    'character_name': None,
+                    'role': member.get('role', 'crew').lower().replace(' ', '_'),
+                    'department': member.get('department', 'production'),
+                    'ordering': len(cast) + i + 1,
+                })
+            
+            if not all_people:
+                return
+            
+            # First, delete existing cast/crew for this title (upsert)
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                delete_url = f"{self.rest_url}/title_cast"
+                await client.delete(
+                    delete_url,
+                    headers=self.headers,
+                    params={"title_id": f"eq.{title_id}"}
+                )
+                
+                # Then insert new cast/crew
+                insert_url = f"{self.rest_url}/title_cast"
+                response = await client.post(
+                    insert_url,
+                    headers=self.headers,
+                    json=all_people
+                )
+                response.raise_for_status()
+                
+                logger.info(f"✓ Synced {len(all_people)} cast/crew members to Supabase")
+                
+        except Exception as e:
+            logger.warning(f"⚠ Cast/crew sync failed: {e}")
+
     async def sync_film(self, film_data: Dict) -> Optional[Dict]:
         """
-        Sync a film analysis to Supabase. 
-        Performs upsert based on aicinedb_film_id using Supabase's native upsert.
+        Sync a film analysis to Supabase.  
+        Performs upsert based on aicinedb_film_id using Supabase's native upsert. 
         
         Args:
             film_data: Complete analysis result from the pipeline
@@ -392,6 +462,10 @@ class SupabaseSyncService:
                 if result:
                     record_id = result[0].get('id', 'unknown')
                     logger.info(f"✓ Synced film to Supabase (id: {record_id})")
+                    
+                    # ✅ YENİ: Cast & Crew'u da sync et
+                    await self._sync_cast_crew(record_id, film_data)
+                    
                     return result[0]
                 
                 return None

@@ -1,356 +1,477 @@
 """
-Complete Film Analysis Pipeline
-Orchestrates all analysis modules and saves to database
+Complete Video Analysis Tasks with Full Integration
+Includes Cast & Crew extraction from credits and descriptions
 """
 import os
 import logging
-from typing import Dict, Optional
-from pathlib import Path
-import json
+import asyncio
+from celery import Task
+from backend.tasks.celery_app import app
 
+# Setup logging
 logger = logging.getLogger(__name__)
 
-# Import all analyzers
-from backend.core.video_processor import VideoProcessor
-from backend.analyzers.cinematography.shot_detector import ShotDetector
-from backend.analyzers.cinematography.style_classifier import StyleClassifier
-from backend.analyzers.audio.audio_analyzer import AudioAnalyzer
-from backend.analyzers.characters.character_tracker import CharacterTracker
-from backend.analyzers.narrative.gemini_analyzer import GeminiNarrativeAnalyzer
-from backend.services.supabase_sync import SupabaseSyncService
+# --- Base Task ---
 
-
-class FullAnalysisPipeline:
-    """Complete film analysis pipeline"""
+class CallbackTask(Task):
+    """Base task with callbacks"""
     
-    def __init__(self, output_base_dir: str = "./analyses"):
-        """
-        Args:
-            output_base_dir: Base directory for analysis outputs
-        """
-        self.output_base_dir = Path(output_base_dir)
-        self.output_base_dir.mkdir(parents=True, exist_ok=True)
+    def on_success(self, retval, task_id, args, kwargs):
+        logger.info(f"✅ Task {task_id} completed successfully")
+    
+    def on_failure(self, exc, task_id, args, kwargs, einfo):
+        logger.error(f"❌ Task {task_id} failed: {exc}")
+
+# --- Main Analysis Task ---
+
+@app.task(base=CallbackTask, bind=True, name="backend.tasks.video_tasks.analyze_film_complete")
+def analyze_film_complete(self, job_id: int, url: str, title_id: str = None):
+    """
+    Complete film analysis with all modules including Cast & Crew
+    
+    This is the main task that orchestrates the entire analysis pipeline.
+    
+    Args:
+        job_id: Analysis job ID
+        url: Video URL
+        title_id: Optional Supabase title UUID (for keyframe/asset upload)
         
-        # Initialize analyzers
-        self.video_processor = VideoProcessor()
-        self.shot_detector = ShotDetector()
-        self.style_classifier = StyleClassifier()
-        self.audio_analyzer = AudioAnalyzer()
-        self.character_tracker = CharacterTracker()
+    Returns:
+        dict: Complete analysis results with film_id
+    """
+    
+    # Create new event loop for this task to run async code
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        result = loop.run_until_complete(_run_analysis(self, job_id, url, title_id))
+        return result
+    except Exception as e:
+        logger.error(f"❌ Analysis failed: {e}", exc_info=True)
         
-        # Gemini analyzer (may fail if API key not set)
+        # Try to update job status to failed
         try:
-            self.narrative_analyzer = GeminiNarrativeAnalyzer()
+            loop.run_until_complete(_update_job_failed(job_id, str(e)))
+        except Exception as db_error:
+            logger.error(f"Failed to update job status: {db_error}")
+        
+        raise e
+    finally:
+        # Clean up event loop
+        try:
+            loop.close()
+            logger.info("🔄 Event loop closed")
         except Exception as e:
-            logger.warning(f"Gemini analyzer unavailable: {e}")
-            self.narrative_analyzer = None
-        
-        # Supabase sync service (optional - disabled if not configured)
-        self.supabase_sync = SupabaseSyncService()
+            logger.warning(f"Event loop close warning: {e}")
+
+
+async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
+    """
+    Internal async function that runs the actual analysis pipeline.
+    """
+    # Imports should be inside async function if they rely on certain environments/settings
+    from backend.core.full_analysis_pipeline import FullAnalysisPipeline
+    from backend.database.connection import get_task_db
+    from backend.database.database_operations import DatabaseOperations
     
-    async def analyze_film(
-        self,
-        url: str,
-        job_id: int,
-        progress_callback=None
-    ) -> Dict:
-        """
-        Complete film analysis pipeline
+    logger.info(f"🎬 Starting complete analysis for job {job_id}")
+    
+    # Use context manager for database connection
+    async with get_task_db() as db:
+        db_ops = DatabaseOperations(db)
         
-        Args:
-            url: Video URL
-            job_id: Job ID for tracking
-            progress_callback: Function to call with progress updates
-            
-        Returns:
-            Complete analysis results
-        """
+        # Update job status to processing
+        await db_ops.update_job_status(
+            job_id,
+            status='processing',
+            progress=0.0,
+            current_stage='Starting analysis...',
+            celery_task_id=task_self.request.id
+        )
+        
+        # Initialize pipeline
+        pipeline = FullAnalysisPipeline()
+        
+        # Progress callback function for Celery status updates
+        def update_progress(progress: float, status: str):
+            task_self.update_state(
+                state="PROGRESS",
+                meta={
+                    'current': int(progress * 100),
+                    'total': 100,
+                    'status': status,
+                    'job_id': job_id
+                }
+            )
+            logger.info(f"📊 Progress: {int(progress * 100)}% - {status}")
+        
+        # Run main analysis pipeline (0-75%)
+        logger.info(f"🎥 Analyzing video: {url}")
+        analysis_result = await pipeline.analyze_film(url, job_id, update_progress, title_id=title_id)
+        
+        # Attempt to get film_id from analysis result or database
+        film_id = analysis_result.get('film_id')
+        if not film_id or film_id == 'Unknown':
+            # Assuming db_ops has a method to retrieve film_id associated with the job
+            film_id = await db_ops.get_film_id_from_job(job_id)
+        
+        film_id_int = film_id if isinstance(film_id, int) else None
+
+        # ============================================================
+        # CAST & CREW EXTRACTION (75-85%)
+        # ============================================================
+        update_progress(0.75, "🎭 Extracting cast & crew...")
+        
         try:
-            # Create job directory
-            job_dir = self.output_base_dir / f"job_{job_id}"
-            job_dir.mkdir(parents=True, exist_ok=True)
-            
-            video_id = f"video_{job_id}"
-            
-            # ============================================================
-            # STAGE 1: Download Video (0-15%)
-            # ============================================================
-            self._update_progress(progress_callback, 0.05, "📥 Downloading video...")
-            
-            video_info = self.video_processor.download_video(url, video_id)
-            video_path = video_info['video_path']
-            
-            self._update_progress(progress_callback, 0.15, f"✓ Downloaded: {video_info['title']}")
-            
-            # ============================================================
-            # STAGE 2: Extract Frames (15-25%)
-            # ============================================================
-            self._update_progress(progress_callback, 0.18, "🎞️ Extracting frames...")
-            
-            frames_dir = job_dir / "frames"
-            frames_info = self.video_processor.extract_frames(
-                video_path,
-                video_id,
-                fps=1.0
+            cast_crew_result = await _extract_cast_crew(
+                analysis_result=analysis_result,
+                url=url
             )
             
-            self._update_progress(progress_callback, 0.25, f"✓ Extracted {frames_info['total_extracted']} frames")
+            # Merge cast & crew into analysis result
+            analysis_result['cast'] = cast_crew_result.get('cast', [])
+            analysis_result['crew'] = cast_crew_result.get('crew', [])
+            analysis_result['cast_crew_sources'] = cast_crew_result.get('sources', [])
+            analysis_result['cast_crew_confidence'] = cast_crew_result.get('confidence', 0.0)
             
-            # ============================================================
-            # STAGE 3: Detect Shots (25-35%)
-            # ============================================================
-            self._update_progress(progress_callback, 0.28, "🎬 Detecting shots...")
+            logger.info(f"🎭 Found {len(analysis_result['cast'])} cast, {len(analysis_result['crew'])} crew")
             
-            keyframes_dir = job_dir / "keyframes"
-            keyframes_dir.mkdir(exist_ok=True)
+        except Exception as e:
+            logger.warning(f"⚠️ Cast & crew extraction failed: {e}")
+            analysis_result['cast'] = analysis_result.get('cast', []) # Keep existing if any
+            analysis_result['crew'] = analysis_result.get('crew', []) # Keep existing if any
+
+        # ============================================================
+        # SAVE CAST & CREW TO RELATIONAL DB (85-95%)
+        # This step was missing in the original logic.
+        # ============================================================
+        if film_id_int:
+            update_progress(0.85, "💾 Saving cast & crew to relational DB...")
+            try:
+                await _save_cast_crew(db_ops, film_id_int, analysis_result)
+            except Exception as e:
+                logger.error(f"❌ Failed to save cast/crew to DB: {e}", exc_info=True)
+        else:
+            logger.warning("Skipping relational DB save: Film ID not available.")
             
-            shots = self.shot_detector.detect_shots(
-                video_path,
-                output_dir=str(keyframes_dir)
-            )
+        update_progress(0.95, "☁️ Syncing to cloud...")
+
+        # ============================================================
+        # SYNC TO SUPABASE (95-100%)
+        # ============================================================
+        try:
+            from backend.services.supabase_sync import SupabaseSyncService
             
-            shot_stats = self.shot_detector.calculate_shot_statistics(shots)
+            sync = SupabaseSyncService()
             
-            self._update_progress(progress_callback, 0.35, f"✓ Detected {len(shots)} shots")
-            
-            # ============================================================
-            # STAGE 4: Classify Visual Style (35-45%)
-            # ============================================================
-            self._update_progress(progress_callback, 0.38, "🎨 Classifying visual style...")
-            
-            # Get keyframe paths
-            keyframe_paths = [s['keyframe_path'] for s in shots if s.get('keyframe_path')]
-            
-            style_result = self.style_classifier.classify_style(keyframe_paths)
-            visual_embedding = self.style_classifier.generate_visual_embedding(keyframe_paths)
-            color_palette = self.style_classifier.analyze_color_palette(keyframe_paths)
-            
-            self._update_progress(progress_callback, 0.45, f"✓ Style: {style_result['top_style']}")
-            
-            # ============================================================
-            # STAGE 5: Extract & Analyze Audio (45-60%)
-            # ============================================================
-            self._update_progress(progress_callback, 0.48, "🎵 Extracting audio...")
-            
-            audio_path = self.video_processor.extract_audio(video_path, video_id)
-            
-            self._update_progress(progress_callback, 0.50, "🎤 Transcribing & analyzing audio...")
-            
-            audio_analysis = self.audio_analyzer.analyze_complete(audio_path)
-            
-            transcript = audio_analysis['transcript']
-            audio_features = audio_analysis['audio_features']
-            text_embedding = audio_analysis.get('text_embedding')
-            audio_embedding = audio_analysis.get('audio_embedding')
-            
-            self._update_progress(
-                progress_callback,
-                0.60,
-                f"✓ Transcribed {transcript['word_count']} words"
-            )
-            
-            # ============================================================
-            # STAGE 6: Analyze Narrative (60-75%)
-            # ============================================================
-            if self.narrative_analyzer and transcript['text']:
-                self._update_progress(progress_callback, 0.63, "📖 Analyzing narrative with Gemini AI...")
+            if sync.enabled:
+                logger.info(f"🔄 Supabase sync enabled - Starting sync...")
                 
-                visual_context = {
-                    'total_shots': len(shots),
-                    'colors': color_palette.get('palette', [])[:5],
-                    'lighting': shots[0].get('lighting', 'unknown') if shots else 'unknown',
+                # Prepare complete film data
+                film_data = {
+                    'job_id': str(job_id),
+                    'title': analysis_result.get('title', 'Unknown'),
+                    'url': url,
+                    'duration': analysis_result.get('duration', 0),
+                    'uploader': analysis_result.get('uploader', 'Unknown'),
+                    'description': analysis_result.get('description', ''),
+                    'year': analysis_result.get('year'),
+                    'thumbnail': analysis_result.get('thumbnail'),
+                    
+                    # Analysis data
+                    'narrative': analysis_result.get('narrative', {}),
+                    'audio_features': analysis_result.get('audio_features', {}),
+                    'style': analysis_result.get('style', {}),
+                    'shots': analysis_result.get('shots', []),
+                    'characters': analysis_result.get('characters', []),
+                    'scenes': analysis_result.get('scenes', []),
+                    'color_palette': analysis_result.get('color_palette', {}),
+                    'style_fingerprint': analysis_result.get('style_fingerprint'),
+                    
+                    # Cast & crew
+                    'cast': analysis_result.get('cast', []),
+                    'crew': analysis_result.get('crew', []),
                 }
                 
-                narrative = await self.narrative_analyzer.analyze_narrative(
-                    transcript=transcript['text'],
-                    title=video_info['title'],
-                    duration=video_info['duration'],
-                    visual_context=visual_context
-                )
+                # ✅ CRITICAL FIX: Await must be added here!
+                result = await sync.sync_film(film_data)
                 
-                self._update_progress(progress_callback, 0.75, "✓ Narrative analysis complete")
+                if result:
+                    supabase_id = result.get('id', 'unknown')
+                    logger.info(f"✅ Synced to Supabase - Title ID: {supabase_id}")
+                else:
+                    logger.warning("⚠️ Supabase sync returned None - check logs")
             else:
-                narrative = None
-                self._update_progress(progress_callback, 0.75, "⚠ Narrative analysis skipped")
-            
-            # ============================================================
-            # STAGE 7: Track Characters (75-85%)
-            # ============================================================
-            self._update_progress(progress_callback, 0.78, "🎭 Tracking characters...")
-            
-            character_analysis = self.character_tracker.analyze_video(
-                video_path,
-                fps_sample=2.0,
-                max_frames=200
-            )
-            
-            characters = character_analysis['characters']
-            
-            self._update_progress(progress_callback, 0.85, f"✓ Found {len(characters)} characters")
-            
-            # ============================================================
-            # STAGE 8: Detect Scenes (85-90%)
-            # ============================================================
-            self._update_progress(progress_callback, 0.87, "🎞️ Detecting scenes...")
-            
-            scenes = self._detect_scenes_from_shots(shots, audio_features)
-            
-            self._update_progress(progress_callback, 0.90, f"✓ Detected {len(scenes)} scenes")
-            
-            # ============================================================
-            # STAGE 9: Compile Results (90-95%)
-            # ============================================================
-            self._update_progress(progress_callback, 0.92, "📊 Compiling results...")
-            
-            analysis_result = {
-                'job_id': job_id,
-                'video_id': video_id,
-                'url': url,
+                logger.info("ℹ️ Supabase sync disabled (SUPABASE_URL or SUPABASE_SERVICE_KEY not set)")
                 
-                # Video metadata
-                'title': video_info['title'],
-                'duration': video_info['duration'],
-                'uploader': video_info.get('uploader'),
-                'resolution': f"{video_info.get('width', 0)}x{video_info.get('height', 0)}",
-                'fps': video_info.get('fps', 30),
-                
-                # Cinematography
-                'shots': shots,
-                'shot_statistics': shot_stats,
-                'total_shots': len(shots),
-                
-                # Visual style
-                'style': style_result,
-                'color_palette': color_palette,
-                'style_fingerprint': style_result['fingerprint'],
-                
-                # Embeddings
-                'visual_embedding': visual_embedding.tolist() if visual_embedding is not None else None,
-                'text_embedding': text_embedding.tolist() if text_embedding is not None else None,
-                'audio_embedding': audio_embedding.tolist() if audio_embedding is not None else None,
-                
-                # Audio
-                'transcript': transcript,
-                'audio_features': audio_features,
-                
-                # Narrative
-                'narrative': narrative,
-                
-                # Characters
-                'characters': characters,
-                'total_characters': len(characters),
-                
-                # Scenes
-                'scenes': scenes,
-                'total_scenes': len(scenes),
-                
-                # Paths
-                'video_path': str(video_path),
-                'frames_dir': str(frames_dir),
-                'audio_path': str(audio_path),
-                'keyframes_dir': str(keyframes_dir),
-            }
-            
-            # Save to JSON
-            result_path = job_dir / "analysis_result.json"
-            with open(result_path, 'w') as f:
-                json.dump(analysis_result, f, indent=2, default=str)
-            
-            self._update_progress(progress_callback, 0.95, "✓ Results compiled")
-            
-            # ============================================================
-            # STAGE 10: Prepare for Database Save (95-98%)
-            # Note: Actual database save is handled by the caller (Celery task)
-            # ============================================================
-            self._update_progress(progress_callback, 0.96, "💾 Preparing for database save...")
-            
-            self._update_progress(progress_callback, 0.98, "✓ Ready for database save")
-            
-            # ============================================================
-            # STAGE 11: Sync to Supabase (98-100%)
-            # ============================================================
-            if self.supabase_sync.enabled:
-                self._update_progress(progress_callback, 0.98, "🔄 Syncing to showcase platform...")
-                
-                try:
-                    await self.supabase_sync.sync_film(analysis_result)
-                    self._update_progress(progress_callback, 0.99, "✓ Synced to showcase platform")
-                except Exception as sync_error:
-                    # Log warning but don't fail the analysis
-                    logger.warning(f"⚠ Supabase sync failed (non-critical): {sync_error}")
-                    self._update_progress(progress_callback, 0.99, "⚠ Showcase sync skipped")
-            
-            self._update_progress(progress_callback, 1.0, "✅ Analysis complete!")
-            
-            logger.info(f"✅ Complete analysis finished for: {video_info['title']}")
-            
-            return analysis_result
-            
         except Exception as e:
-            logger.error(f"❌ Analysis pipeline failed: {e}")
-            raise
-    
-    def _detect_scenes_from_shots(self, shots: list, audio_features: dict) -> list:
-        """
-        Detect scenes by grouping shots based on visual/audio continuity
-        Simple heuristic: group consecutive shots with similar lighting
-        """
-        if not shots:
-            return []
+            logger.error(f"⚠️ Supabase sync failed: {e}", exc_info=True)
+            
+        logger.info(f"✅ Analysis complete - Film ID: {film_id}")
         
-        scenes = []
-        current_scene = {
-            'scene_number': 1,
-            'start_time': shots[0]['start_time'],
-            'shots': [shots[0]],
+        return {
+            'job_id': job_id,
+            'film_id': film_id,
+            'title_id': title_id,
+            'status': 'completed',
+            'title': analysis_result.get('title', 'Unknown'),
+            'duration': analysis_result.get('duration', 0),
+            'total_shots': analysis_result.get('total_shots', 0),
+            'total_characters': analysis_result.get('total_characters', 0),
+            'total_cast': len(analysis_result.get('cast', [])),
+            'total_crew': len(analysis_result.get('crew', [])),
+            'style': analysis_result.get('style_fingerprint'),
+        }
+
+
+async def _extract_cast_crew(analysis_result: dict, url: str) -> dict:
+    """
+    Extract cast & crew from video description and end credits using the Extractor.
+    
+    Args:
+        analysis_result: Current analysis results
+        url: Original video URL
+        
+    Returns:
+        Dict with cast and crew lists
+    """
+    from backend.analyzers.cast_crew_extractor import CastCrewExtractor
+    
+    gemini_api_key = os.getenv('GEMINI_API_KEY')
+    if not gemini_api_key:
+        logger.warning("⚠️ GEMINI_API_KEY not set, skipping cast & crew extraction")
+        return {'cast': [], 'crew': [], 'sources': [], 'confidence': 0.0}
+    
+    extractor = CastCrewExtractor(gemini_api_key)
+    
+    # Get data from analysis result
+    video_path = analysis_result.get('video_path', '')
+    description = analysis_result.get('description', '')
+    duration = analysis_result.get('duration', 0)
+    frames_dir = analysis_result.get('frames_dir', '')
+    characters = analysis_result.get('characters', [])
+    
+    # Run extraction
+    result = await extractor.extract_all(
+        video_path=video_path,
+        description=description,
+        duration=duration,
+        frames_dir=frames_dir,
+        characters=characters
+    )
+    
+    return result
+
+
+async def _save_cast_crew(db_ops, film_id: int, analysis_result: dict):
+    """
+    Save cast & crew to relational database (film_cast table).
+    
+    Args:
+        db_ops: Database operations instance
+        film_id: Film ID
+        analysis_result: Analysis results with cast/crew
+    """
+    cast = analysis_result.get('cast', [])
+    crew = analysis_result.get('crew', [])
+    
+    # 1. Clear existing cast & crew to prevent duplicates on rerun
+    try:
+        await db_ops.db.execute(
+            "DELETE FROM film_cast WHERE film_id = :film_id",
+            {'film_id': film_id}
+        )
+        logger.info(f"Cleared existing cast/crew for film {film_id}")
+    except Exception as e:
+        logger.warning(f"Failed to clear existing cast/crew: {e}")
+
+    # 2. Save cast members
+    for i, member in enumerate(cast):
+        try:
+            # Assuming 'film_cast' table is used for both cast and crew
+            await db_ops.db.execute(
+                """
+                INSERT INTO film_cast (
+                    film_id, name, role, type, department, 
+                    screen_time, appearance_count, ordering
+                ) VALUES (
+                    :film_id, :name, :role, :type, :department,
+                    :screen_time, :appearance_count, :ordering
+                )
+                """,
+                {
+                    'film_id': film_id,
+                    'name': member.get('name', 'Unknown'),
+                    'role': member.get('role', 'Actor'),
+                    'type': member.get('type', 'actor'),
+                    'department': 'acting', # Assuming all cast members are acting department
+                    'screen_time': member.get('screen_time'),
+                    'appearance_count': member.get('appearance_count'),
+                    'ordering': i + 1
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to save cast member {member.get('name')}: {e}")
+    
+    # 3. Save crew members
+    for i, member in enumerate(crew):
+        try:
+            await db_ops.db.execute(
+                """
+                INSERT INTO film_cast (
+                    film_id, name, role, type, department, ordering
+                ) VALUES (
+                    :film_id, :name, :role, :type, :department, :ordering
+                )
+                """,
+                {
+                    'film_id': film_id,
+                    'name': member.get('name', 'Unknown'),
+                    # Use provided role, default to 'Crew'
+                    'role': member.get('role', 'Crew'),
+                    # Set type as a standard 'crew' value
+                    'type': 'crew', 
+                    # Use provided department, default to 'production'
+                    'department': member.get('department', 'production'),
+                    'ordering': i + 1
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to save crew member {member.get('name')}: {e}")
+    
+    logger.info(f"💾 Saved {len(cast)} cast, {len(crew)} crew members to film_cast table")
+
+
+async def _update_job_failed(job_id: int, error_message: str):
+    """
+    Update job status to failed. 
+    Runs in its own database context. 
+    """
+    from backend.database.connection import get_task_db
+    from backend.database.database_operations import DatabaseOperations
+    
+    async with get_task_db() as db:
+        db_ops = DatabaseOperations(db)
+        await db_ops.update_job_status(
+            job_id,
+            status='failed',
+            progress=0.0,
+            current_stage='Failed',
+            error_message=error_message
+        )
+        logger.info(f"📝 Job {job_id} marked as failed")
+
+
+# ============================================================
+# UTILITY TASKS
+# ============================================================
+
+@app.task(name="backend.tasks.video_tasks.extract_cast_crew_only")
+def extract_cast_crew_only(film_id: int, url: str, description: str = ""):
+    """
+    Extract cast & crew for an existing film
+    Useful for re-processing or updating cast info
+    
+    Args:
+        film_id: Existing film ID
+        url: Video URL
+        description: Video description
+        
+    Returns:
+        dict: Cast & crew results
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        result = loop.run_until_complete(
+            _extract_cast_crew_standalone(film_id, url, description)
+        )
+        return result
+    finally:
+        loop.close()
+
+
+async def _extract_cast_crew_standalone(film_id: int, url: str, description: str):
+    """Standalone cast & crew extraction and save to DB"""
+    from backend.database.connection import get_task_db
+    from backend.database.database_operations import DatabaseOperations
+    from backend.analyzers.cast_crew_extractor import CastCrewExtractor
+    
+    gemini_api_key = os.getenv('GEMINI_API_KEY')
+    if not gemini_api_key:
+        return {'error': 'GEMINI_API_KEY not set'}
+    
+    async with get_task_db() as db:
+        db_ops = DatabaseOperations(db)
+        
+        # Get existing film data
+        film = await db.fetch_one(
+            "SELECT * FROM films WHERE id = :film_id",
+            {'film_id': film_id}
+        )
+        
+        if not film:
+            return {'error': 'Film not found'}
+        
+        # Get characters (needed for character mapping)
+        characters = await db.fetch_all(
+            "SELECT * FROM characters WHERE film_id = :film_id",
+            {'film_id': film_id}
+        )
+        
+        # Extract cast & crew
+        extractor = CastCrewExtractor(gemini_api_key)
+        result = await extractor.extract_all(
+            video_path='', # Not available in standalone mode
+            description=description or film.get('description', ''),
+            duration=film.get('duration', 0),
+            frames_dir='', # Not available in standalone mode
+            characters=[dict(c) for c in characters]
+        )
+        
+        # Save to database
+        analysis_result = {
+            'cast': result.get('cast', []),
+            'crew': result.get('crew', [])
         }
         
-        for i in range(1, len(shots)):
-            shot = shots[i]
-            prev_shot = shots[i - 1]
-            
-            # Check if shot should be in same scene
-            # Simple heuristic: if time gap < 5s and similar lighting
-            time_gap = shot['start_time'] - prev_shot['end_time']
-            same_lighting = shot.get('lighting') == prev_shot.get('lighting')
-            
-            if time_gap < 5.0 and same_lighting:
-                # Continue current scene
-                current_scene['shots'].append(shot)
-            else:
-                # Finish current scene and start new one
-                current_scene['end_time'] = prev_shot['end_time']
-                current_scene['duration'] = current_scene['end_time'] - current_scene['start_time']
-                current_scene['num_shots'] = len(current_scene['shots'])
-                
-                # Add scene properties
-                lightings = [s.get('lighting', 'unknown') for s in current_scene['shots']]
-                current_scene['lighting'] = max(set(lightings), key=lightings.count)
-                
-                scenes.append(current_scene)
-                
-                # Start new scene
-                current_scene = {
-                    'scene_number': len(scenes) + 1,
-                    'start_time': shot['start_time'],
-                    'shots': [shot],
-                }
+        # Save new cast & crew
+        await _save_cast_crew(db_ops, film_id, analysis_result)
         
-        # Add final scene
-        if current_scene['shots']:
-            current_scene['end_time'] = shots[-1]['end_time']
-            current_scene['duration'] = current_scene['end_time'] - current_scene['start_time']
-            current_scene['num_shots'] = len(current_scene['shots'])
-            
-            lightings = [s.get('lighting', 'unknown') for s in current_scene['shots']]
-            current_scene['lighting'] = max(set(lightings), key=lightings.count)
-            
-            scenes.append(current_scene)
-        
-        return scenes
+        return {
+            'film_id': film_id,
+            'cast_count': len(result.get('cast', [])),
+            'crew_count': len(result.get('crew', [])),
+            'sources': result.get('sources', []),
+            'confidence': result.get('confidence', 0.0)
+        }
+
+
+@app.task(name="backend.tasks.video_tasks.test_task")
+def test_task(message: str):
+    """Test task for debugging"""
+    logger.info(f"🧪 Test task received: {message}")
+    return f"Test completed: {message}"
+
+
+@app.task(name="backend.tasks.video_tasks.test_async_task")
+def test_async_task(message: str):
+    """Test async task with database connection"""
     
-    def _update_progress(self, callback, progress: float, status: str):
-        """Update progress via callback"""
-        if callback:
-            callback(progress, status) 
-        logger.info(f"[{progress:.0%}] {status}")
+    async def _test():
+        from backend.database.connection import get_task_db
+        
+        async with get_task_db() as db:
+            logger.info(f"🧪 Test async task - DB connected")
+            return f"Async test completed: {message}"
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        result = loop.run_until_complete(_test())
+        return result
+    finally:
+        loop.close()
