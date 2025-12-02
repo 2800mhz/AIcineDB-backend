@@ -33,14 +33,16 @@ class SimilarityType(str, Enum):
 class AnalysisRequest(BaseModel):
     """Request to analyze a video"""
     url: HttpUrl
-    priority: int = Field(default=5, ge=1, le=10, description="Priority (1=lowest, 10=highest)")
-    force_reanalyze: bool = Field(default=False, description="Force re-analysis if already exists")
+    title_id: Optional[str] = None  # ✅ YENİ: Supabase title UUID
+    priority: str = "normal"
+    force_reanalyze: bool = False
     
     class Config:
         schema_extra = {
             "example": {
                 "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-                "priority": 5,
+                "title_id": "0343e566-498d-4ac5-b39d-da3453dcabcc",  # ✅ Example
+                "priority": "normal",
                 "force_reanalyze": False
             }
         }
