@@ -209,12 +209,42 @@ class DatabaseOperations:
         result = await self.db.fetch_one(query, values={"url": url, "priority": priority})
         return result['id'] if result else None
     
+    # database_operations.py içinde
+
     async def get_job(self, job_id: int) -> Dict:
         """Get job status"""
         query = "SELECT * FROM analysis_jobs WHERE id = :job_id"
         result = await self.db.fetch_one(query, values={"job_id": job_id})
         return dict(result) if result else None
-    
+
+    # ✅ BURAYA EKLEYİN:
+    async def get_film_id_from_job(self, job_id: int) -> Optional[int]:
+        """
+        Get film_id associated with a job
+        
+        Args:
+            job_id: Job ID
+            
+        Returns:
+            Film ID or None if not found
+        """
+        try:
+            result = await self.db.fetch_one(
+                "SELECT film_id FROM analysis_jobs WHERE id = :job_id",
+                values={"job_id": job_id}
+            )
+            
+            if result and result['film_id']:
+                logger.info(f"📊 Found film_id {result['film_id']} for job {job_id}")
+                return result['film_id']
+            else:
+                logger.warning(f"⚠️ No film_id found for job {job_id}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Error getting film_id from job {job_id}: {e}")
+            return None
+
     # ============================================================================
     # RELATED RECORDS
     # ============================================================================

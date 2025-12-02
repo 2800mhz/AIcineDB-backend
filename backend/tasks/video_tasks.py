@@ -8,8 +8,10 @@ import asyncio
 from celery import Task
 from backend.tasks.celery_app import app
 
+# Setup logging
 logger = logging.getLogger(__name__)
 
+# --- Base Task ---
 
 class CallbackTask(Task):
     """Base task with callbacks"""
@@ -20,24 +22,14 @@ class CallbackTask(Task):
     def on_failure(self, exc, task_id, args, kwargs, einfo):
         logger.error(f"❌ Task {task_id} failed: {exc}")
 
+# --- Main Analysis Task ---
 
 @app.task(base=CallbackTask, bind=True, name="backend.tasks.video_tasks.analyze_film_complete")
 def analyze_film_complete(self, job_id: int, url: str, title_id: str = None):
     """
     Complete film analysis with all modules including Cast & Crew
     
-    This is the main task that orchestrates the entire analysis pipeline:
-    1. Download video (YouTube, Vimeo, etc.)
-    2. Extract frames & audio
-    3. Detect shots & extract keyframes
-    4. Classify visual style
-    5. Transcribe audio
-    6. Analyze narrative with Gemini
-    7. Track characters
-    8. Extract Cast & Crew (NEW!)
-    9. Detect scenes
-    10. Save everything to database
-    11. Sync to Supabase
+    This is the main task that orchestrates the entire analysis pipeline.
     
     Args:
         job_id: Analysis job ID
@@ -48,7 +40,7 @@ def analyze_film_complete(self, job_id: int, url: str, title_id: str = None):
         dict: Complete analysis results with film_id
     """
     
-    # Create new event loop for this task
+    # Create new event loop for this task to run async code
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -76,13 +68,12 @@ def analyze_film_complete(self, job_id: int, url: str, title_id: str = None):
 
 async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
     """
-    Internal async function that runs the actual analysis. 
-    This runs in a fresh event loop created by the task.
+    Internal async function that runs the actual analysis pipeline.
     """
+    # Imports should be inside async function if they rely on certain environments/settings
     from backend.core.full_analysis_pipeline import FullAnalysisPipeline
     from backend.database.connection import get_task_db
     from backend.database.database_operations import DatabaseOperations
-    from backend.analyzers.cast_crew_extractor import CastCrewExtractor
     
     logger.info(f"🎬 Starting complete analysis for job {job_id}")
     
@@ -102,7 +93,7 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
         # Initialize pipeline
         pipeline = FullAnalysisPipeline()
         
-        # Progress callback
+        # Progress callback function for Celery status updates
         def update_progress(progress: float, status: str):
             task_self.update_state(
                 state="PROGRESS",
@@ -117,11 +108,21 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
         
         # Run main analysis pipeline (0-75%)
         logger.info(f"🎥 Analyzing video: {url}")
-        analysis_result = await pipeline.analyze_film(url, job_id, update_progress, title_id=title_id)
+        analysis_result = await pipeline.analyze_film(
+            url, 
+            job_id, 
+            title_id,           # ← 3. parametre (None olabilir)
+            update_progress     # ← 4. parametre (callback fonksiyonu)
+        )
         
-        # Attempt to get film_id from analysis result for logging/return if not already defined
-        film_id = analysis_result.get('film_id', 'Unknown')
+        # Attempt to get film_id from analysis result or database
+        film_id = analysis_result.get('film_id')
+        if not film_id or film_id == 'Unknown':
+            # Assuming db_ops has a method to retrieve film_id associated with the job
+            film_id = await db_ops.get_film_id_from_job(job_id)
         
+        film_id_int = film_id if isinstance(film_id, int) else None
+
         # ============================================================
         # CAST & CREW EXTRACTION (75-85%)
         # ============================================================
@@ -143,82 +144,95 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
             
         except Exception as e:
             logger.warning(f"⚠️ Cast & crew extraction failed: {e}")
-            analysis_result['cast'] = []
-            analysis_result['crew'] = []
-        
+            analysis_result['cast'] = analysis_result.get('cast', []) # Keep existing if any
+            analysis_result['crew'] = analysis_result.get('crew', []) # Keep existing if any
+
+        # ============================================================
+        # SAVE CAST & CREW TO RELATIONAL DB (85-95%)
+        # This step was missing in the original logic.
+        # ============================================================
+        if film_id_int:
+            update_progress(0.85, "💾 Saving cast & crew to relational DB...")
+            try:
+                await _save_cast_crew(db_ops, film_id_int, analysis_result)
+            except Exception as e:
+                logger.error(f"❌ Failed to save cast/crew to DB: {e}", exc_info=True)
+        else:
+            logger.warning("Skipping relational DB save: Film ID not available.")
+            
         update_progress(0.95, "☁️ Syncing to cloud...")
 
-    # ============================================================
-    # SYNC TO SUPABASE (95-100%)
-    # ============================================================
-    try:
-        from backend.services.supabase_sync import SupabaseSyncService
-        
-        sync = SupabaseSyncService()
-        
-        if sync.enabled:
-            logger.info(f"🔄 Supabase sync enabled - Starting sync...")
+        # ============================================================
+        # SYNC TO SUPABASE (95-100%)
+        # ============================================================
+        try:
+            from backend.services.supabase_sync import SupabaseSyncService
             
-            # Prepare complete film data
-            film_data = {
-                'job_id': str(job_id),
-                'title': analysis_result.get('title', 'Unknown'),
-                'url': url,
-                'duration': analysis_result.get('duration', 0),
-                'uploader': analysis_result.get('uploader', 'Unknown'),
-                'description': analysis_result.get('description', ''),
-                'year': analysis_result.get('year'),
-                'thumbnail': analysis_result.get('thumbnail'),
+            sync = SupabaseSyncService()
+            
+            if sync.enabled:
+                logger.info(f"🔄 Supabase sync enabled - Starting sync...")
                 
-                # Analysis data
-                'narrative': analysis_result.get('narrative', {}),
-                'audio_features': analysis_result.get('audio_features', {}),
-                'style': analysis_result.get('style', {}),
-                'shots': analysis_result.get('shots', []),
-                'characters': analysis_result.get('characters', []),
-                'scenes': analysis_result.get('scenes', []),
-                'color_palette': analysis_result.get('color_palette', {}),
-                'style_fingerprint': analysis_result.get('style_fingerprint'),
+                # Prepare complete film data
+                film_data = {
+                    'job_id': str(job_id),
+                    'title': analysis_result.get('title', 'Unknown'),
+                    'url': url,
+                    'duration': analysis_result.get('duration', 0),
+                    'uploader': analysis_result.get('uploader', 'Unknown'),
+                    'description': analysis_result.get('description', ''),
+                    'year': analysis_result.get('year'),
+                    'thumbnail': analysis_result.get('thumbnail'),
+                    
+                    # Analysis data
+                    'narrative': analysis_result.get('narrative', {}),
+                    'audio_features': analysis_result.get('audio_features', {}),
+                    'style': analysis_result.get('style', {}),
+                    'shots': analysis_result.get('shots', []),
+                    'characters': analysis_result.get('characters', []),
+                    'scenes': analysis_result.get('scenes', []),
+                    'color_palette': analysis_result.get('color_palette', {}),
+                    'style_fingerprint': analysis_result.get('style_fingerprint'),
+                    
+                    # Cast & crew
+                    'cast': analysis_result.get('cast', []),
+                    'crew': analysis_result.get('crew', []),
+                }
                 
-                # Cast & crew
-                'cast': analysis_result.get('cast', []),
-                'crew': analysis_result.get('crew', []),
-            }
-            
-            # ✅ AWAIT ekle! 
-            result = await sync.sync_film(film_data)
-            
-            if result:
-                supabase_id = result.get('id', 'unknown')
-                logger.info(f"✅ Synced to Supabase - Title ID: {supabase_id}")
+                # ✅ CRITICAL FIX: Await must be added here!
+                result = await sync.sync_film(film_data)
+                
+                if result:
+                    supabase_id = result.get('id', 'unknown')
+                    logger.info(f"✅ Synced to Supabase - Title ID: {supabase_id}")
+                else:
+                    logger.warning("⚠️ Supabase sync returned None - check logs")
             else:
-                logger.warning("⚠️ Supabase sync returned None - check logs")
-        else:
-            logger.info("ℹ️ Supabase sync disabled (SUPABASE_URL or SUPABASE_SERVICE_KEY not set)")
+                logger.info("ℹ️ Supabase sync disabled (SUPABASE_URL or SUPABASE_SERVICE_KEY not set)")
+                
+        except Exception as e:
+            logger.error(f"⚠️ Supabase sync failed: {e}", exc_info=True)
             
-    except Exception as e:
-        logger.error(f"⚠️ Supabase sync failed: {e}", exc_info=True)
+        logger.info(f"✅ Analysis complete - Film ID: {film_id}")
         
-    logger.info(f"✅ Analysis complete - Film ID: {film_id}")
-    
-    return {
-        'job_id': job_id,
-        'film_id': film_id,
-        'title_id': title_id, # Added title_id to return result
-        'status': 'completed',
-        'title': analysis_result.get('title', 'Unknown'),
-        'duration': analysis_result.get('duration', 0),
-        'total_shots': analysis_result.get('total_shots', 0),
-        'total_characters': analysis_result.get('total_characters', 0),
-        'total_cast': len(analysis_result.get('cast', [])),
-        'total_crew': len(analysis_result.get('crew', [])),
-        'style': analysis_result.get('style_fingerprint'),
-    }
+        return {
+            'job_id': job_id,
+            'film_id': film_id,
+            'title_id': title_id,
+            'status': 'completed',
+            'title': analysis_result.get('title', 'Unknown'),
+            'duration': analysis_result.get('duration', 0),
+            'total_shots': analysis_result.get('total_shots', 0),
+            'total_characters': analysis_result.get('total_characters', 0),
+            'total_cast': len(analysis_result.get('cast', [])),
+            'total_crew': len(analysis_result.get('crew', [])),
+            'style': analysis_result.get('style_fingerprint'),
+        }
 
 
 async def _extract_cast_crew(analysis_result: dict, url: str) -> dict:
     """
-    Extract cast & crew from video description and end credits
+    Extract cast & crew from video description and end credits using the Extractor.
     
     Args:
         analysis_result: Current analysis results
@@ -257,7 +271,7 @@ async def _extract_cast_crew(analysis_result: dict, url: str) -> dict:
 
 async def _save_cast_crew(db_ops, film_id: int, analysis_result: dict):
     """
-    Save cast & crew to database
+    Save cast & crew to relational database (film_cast table).
     
     Args:
         db_ops: Database operations instance
@@ -267,9 +281,20 @@ async def _save_cast_crew(db_ops, film_id: int, analysis_result: dict):
     cast = analysis_result.get('cast', [])
     crew = analysis_result.get('crew', [])
     
-    # Save cast members
+    # 1. Clear existing cast & crew to prevent duplicates on rerun
+    try:
+        await db_ops.db.execute(
+            "DELETE FROM film_cast WHERE film_id = :film_id",
+            {'film_id': film_id}
+        )
+        logger.info(f"Cleared existing cast/crew for film {film_id}")
+    except Exception as e:
+        logger.warning(f"Failed to clear existing cast/crew: {e}")
+
+    # 2. Save cast members
     for i, member in enumerate(cast):
         try:
+            # Assuming 'film_cast' table is used for both cast and crew
             await db_ops.db.execute(
                 """
                 INSERT INTO film_cast (
@@ -285,16 +310,16 @@ async def _save_cast_crew(db_ops, film_id: int, analysis_result: dict):
                     'name': member.get('name', 'Unknown'),
                     'role': member.get('role', 'Actor'),
                     'type': member.get('type', 'actor'),
-                    'department': 'acting',
+                    'department': 'acting', # Assuming all cast members are acting department
                     'screen_time': member.get('screen_time'),
                     'appearance_count': member.get('appearance_count'),
                     'ordering': i + 1
                 }
             )
         except Exception as e:
-            logger.warning(f"Failed to save cast member: {e}")
+            logger.warning(f"Failed to save cast member {member.get('name')}: {e}")
     
-    # Save crew members
+    # 3. Save crew members
     for i, member in enumerate(crew):
         try:
             await db_ops.db.execute(
@@ -308,16 +333,19 @@ async def _save_cast_crew(db_ops, film_id: int, analysis_result: dict):
                 {
                     'film_id': film_id,
                     'name': member.get('name', 'Unknown'),
+                    # Use provided role, default to 'Crew'
                     'role': member.get('role', 'Crew'),
-                    'type': member.get('role', 'crew').lower().replace(' ', '_'),
+                    # Set type as a standard 'crew' value
+                    'type': 'crew', 
+                    # Use provided department, default to 'production'
                     'department': member.get('department', 'production'),
                     'ordering': i + 1
                 }
             )
         except Exception as e:
-            logger.warning(f"Failed to save crew member: {e}")
+            logger.warning(f"Failed to save crew member {member.get('name')}: {e}")
     
-    logger.info(f"💾 Saved {len(cast)} cast, {len(crew)} crew members")
+    logger.info(f"💾 Saved {len(cast)} cast, {len(crew)} crew members to film_cast table")
 
 
 async def _update_job_failed(job_id: int, error_message: str):
@@ -371,7 +399,7 @@ def extract_cast_crew_only(film_id: int, url: str, description: str = ""):
 
 
 async def _extract_cast_crew_standalone(film_id: int, url: str, description: str):
-    """Standalone cast & crew extraction"""
+    """Standalone cast & crew extraction and save to DB"""
     from backend.database.connection import get_task_db
     from backend.database.database_operations import DatabaseOperations
     from backend.analyzers.cast_crew_extractor import CastCrewExtractor
@@ -392,7 +420,7 @@ async def _extract_cast_crew_standalone(film_id: int, url: str, description: str
         if not film:
             return {'error': 'Film not found'}
         
-        # Get characters
+        # Get characters (needed for character mapping)
         characters = await db.fetch_all(
             "SELECT * FROM characters WHERE film_id = :film_id",
             {'film_id': film_id}
@@ -401,10 +429,10 @@ async def _extract_cast_crew_standalone(film_id: int, url: str, description: str
         # Extract cast & crew
         extractor = CastCrewExtractor(gemini_api_key)
         result = await extractor.extract_all(
-            video_path='',
+            video_path='', # Not available in standalone mode
             description=description or film.get('description', ''),
             duration=film.get('duration', 0),
-            frames_dir='',
+            frames_dir='', # Not available in standalone mode
             characters=[dict(c) for c in characters]
         )
         
@@ -413,12 +441,6 @@ async def _extract_cast_crew_standalone(film_id: int, url: str, description: str
             'cast': result.get('cast', []),
             'crew': result.get('crew', [])
         }
-        
-        # Clear existing cast & crew
-        await db.execute(
-            "DELETE FROM film_cast WHERE film_id = :film_id",
-            {'film_id': film_id}
-        )
         
         # Save new cast & crew
         await _save_cast_crew(db_ops, film_id, analysis_result)
