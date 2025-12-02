@@ -127,26 +127,21 @@ async def root():
 
 @app.post("/api/analyze", response_model=AnalysisJobResponse, status_code=202)
 async def submit_analysis(request: AnalysisRequest):
-    """
-    Submit a video URL for analysis
-    
-    Returns job ID for tracking progress
-    """
-    logger.info(f"📥 Analysis request: {request.url}")
-    
+    """Submit a video URL for analysis"""
     try:
         async with get_db() as db:
-            # Check if URL already analyzed
-            existing = await db.fetch_one(
-                query="SELECT id, analyzed_at FROM films WHERE url = :url",
-                values={"url": str(request.url)}
-            )
+            # ✅ Priority mapping (string → integer)
+            priority_map = {
+                "low": 1,
+                "normal": 5,
+                "high": 10
+            }
             
-            if existing and not request.force_reanalyze:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"URL already analyzed (film_id: {existing['id']}). Use force_reanalyze=true to re-analyze."
-                )
+            # ✅ Eğer integer gelirse direkt kullan, değilse map'le
+            if isinstance(request.priority, int):
+                priority_value = request.priority
+            else:
+                priority_value = priority_map.get(request.priority.lower(), 5)
             
             # Create analysis job
             job = await db.fetch_one(
@@ -155,13 +150,27 @@ async def submit_analysis(request: AnalysisRequest):
                 VALUES (:url, 'pending', :priority)
                 RETURNING *
                 """,
-                values={"url": str(request.url), "priority": request.priority}
+                values={
+                    "url": str(request.url), 
+                    "priority": priority_value  # ✅ Integer olarak gönder
+                }
             )
             
-            # Queue background task
-            task = analyze_film_complete.delay(job['id'], str(request.url))
+            # title_id'yi al
+            title_id = getattr(request, 'title_id', None)
             
-            logger.info(f"📥 Created analysis job {job['id']} for {request.url}")
+            # Task'ı çağır
+            # Not: analyze_film_complete dosyanın başında import edilmiş durumda, 
+            # ancak user isteğine sadık kalarak burada tekrar import edebiliriz veya
+            # mevcut importu kullanabiliriz. Temiz kod için mevcut import kullanıldı.
+            
+            task = analyze_film_complete.delay(
+                job['id'], 
+                str(request.url),
+                title_id=title_id
+            )
+            
+            logger.info(f"📥 Created job {job['id']} (title_id: {title_id}, priority: {priority_value})")
             
             return AnalysisJobResponse(
                 job_id=job['id'],
@@ -171,10 +180,8 @@ async def submit_analysis(request: AnalysisRequest):
                 celery_task_id=task.id
             )
             
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Failed to queue analysis: {e}")
+        logger.error(f"Failed to create job: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -161,6 +161,8 @@ See `.env.example` for all configuration options.
 | `GEMINI_API_KEY` | Google Gemini API key (required) | - |
 | `WHISPER_MODEL` | Whisper model size | `base` |
 | `FRAME_EXTRACTION_FPS` | Frame extraction rate | `1.0` |
+| `SUPABASE_URL` | Supabase project URL for showcase sync (optional) | - |
+| `SUPABASE_SERVICE_KEY` | Supabase service role key for showcase sync (optional) | - |
 
 ## 📚 API Endpoints
 

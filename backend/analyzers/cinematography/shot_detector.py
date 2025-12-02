@@ -171,6 +171,8 @@ class ShotDetector:
     ) -> str:
         """Extract keyframe at specific timestamp"""
         output_path = Path(output_dir) / f"shot_{shot_number:04d}.jpg"
+        
+        # ✅ Create directory if it doesn't exist
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         cap = cv2.VideoCapture(video_path)
@@ -182,8 +184,12 @@ class ShotDetector:
         cap.release()
         
         if ret:
-            cv2.imwrite(str(output_path), frame)
+            # ✅ Save with absolute path
+            cv2.imwrite(str(output_path.resolve()), frame)
+            logger.info(f"💾 Saved keyframe: {output_path}")
             return str(output_path)
+        else:
+            logger.warning(f"⚠️ Failed to extract frame at {timestamp}s")
         
         return None
     

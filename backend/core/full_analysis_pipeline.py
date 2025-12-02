@@ -17,6 +17,7 @@ from backend.analyzers.cinematography.style_classifier import StyleClassifier
 from backend.analyzers.audio.audio_analyzer import AudioAnalyzer
 from backend.analyzers.characters.character_tracker import CharacterTracker
 from backend.analyzers.narrative.gemini_analyzer import GeminiNarrativeAnalyzer
+from backend.services.supabase_sync import SupabaseSyncService
 
 
 class FullAnalysisPipeline:
@@ -43,11 +44,15 @@ class FullAnalysisPipeline:
         except Exception as e:
             logger.warning(f"Gemini analyzer unavailable: {e}")
             self.narrative_analyzer = None
+        
+        # Supabase sync service (optional - disabled if not configured)
+        self.supabase_sync = SupabaseSyncService()
     
     async def analyze_film(
         self,
         url: str,
         job_id: int,
+        title_id: Optional[str] = None, # ✅ Yeni parametre eklendi
         progress_callback=None
     ) -> Dict:
         """
@@ -56,6 +61,7 @@ class FullAnalysisPipeline:
         Args:
             url: Video URL
             job_id: Job ID for tracking
+            title_id: Optional title ID for database synchronization (used for keyframe upload) # ✅ Docstring güncellendi
             progress_callback: Function to call with progress updates
             
         Returns:
@@ -98,19 +104,45 @@ class FullAnalysisPipeline:
             self._update_progress(progress_callback, 0.28, "🎬 Detecting shots...")
             
             keyframes_dir = job_dir / "keyframes"
-            keyframes_dir.mkdir(exist_ok=True)
+            keyframes_dir.mkdir(parents=True, exist_ok=True)
             
             shots = self.shot_detector.detect_shots(
                 video_path,
-                output_dir=str(keyframes_dir)
+                output_dir=str(keyframes_dir)  # ✅ Pass keyframes directory
+
             )
             
             shot_stats = self.shot_detector.calculate_shot_statistics(shots)
             
             self._update_progress(progress_callback, 0.35, f"✓ Detected {len(shots)} shots")
+
+            keyframe_count = len(list(keyframes_dir.glob("shot_*.jpg")))
+            logger.info(f"✅ Saved {keyframe_count} keyframes to {keyframes_dir}")
             
             # ============================================================
-            # STAGE 4: Classify Visual Style (35-45%)
+            # ✅ YENİ: Upload Keyframes to Supabase (35-38%)
+            # ============================================================
+            if title_id:
+                try:
+                    self._update_progress(progress_callback, 0.36, "📤 Uploading keyframes to Supabase...")
+                    
+                    # Dinamik import, böylece FrameUploader sadece gerektiğinde yüklenir.
+                    from backend.services.frame_uploader import FrameUploader
+                    uploader = FrameUploader()
+                    
+                    uploaded_frames = await uploader.upload_keyframes(
+                        keyframes_dir=str(keyframes_dir),
+                        title_id=title_id
+                    )
+                    
+                    self._update_progress(progress_callback, 0.38, f"✓ Uploaded {len(uploaded_frames)} frames")
+                    
+                except Exception as e:
+                    logger.error(f"Frame upload failed: {e}")
+                    self._update_progress(progress_callback, 0.38, "⚠️ Frame upload failed, continuing...")
+            
+            # ============================================================
+            # STAGE 4: Classify Visual Style (38-45%)
             # ============================================================
             self._update_progress(progress_callback, 0.38, "🎨 Classifying visual style...")
             
@@ -253,13 +285,52 @@ class FullAnalysisPipeline:
                 json.dump(analysis_result, f, indent=2, default=str)
             
             self._update_progress(progress_callback, 0.95, "✓ Results compiled")
+                        
+            # ============================================================
+            # STAGE 10: Save to Database (95-98%)
+            # ============================================================
+            self._update_progress(progress_callback, 0.96, "💾 Saving to database...")
+
+            # ✅ IMPORT DatabaseOperations
+            from backend.database.connection import get_task_db
+            from backend.database.database_operations import DatabaseOperations
+
+            # ✅ Save to database
+            async with get_task_db() as db:
+                db_ops = DatabaseOperations(db)
+                
+                # Save film and get film_id
+                film_id = await db_ops.create_film(analysis_result)
+                
+                logger.info(f"💾 Film saved with ID: {film_id}")
+                
+                # ✅ Update analysis_result with film_id
+                analysis_result['film_id'] = film_id
+                
+                # Update job with film_id
+                await db_ops.update_job_status(
+                    job_id,
+                    status='processing',
+                    progress=0.98,
+                    current_stage='Database save complete',
+                    film_id=film_id
+                )
+
+            self._update_progress(progress_callback, 0.98, "✓ Saved to database")
             
             # ============================================================
-            # STAGE 10: Save to Database (95-100%)
+            # STAGE 11: Sync to Supabase (98-100%)
             # ============================================================
-            self._update_progress(progress_callback, 0.97, "💾 Saving to database...")
-            
-            # This will be handled by the caller (Celery task)
+            if self.supabase_sync.enabled:
+                self._update_progress(progress_callback, 0.98, "🔄 Syncing to showcase platform...")
+                
+                try:
+                    await self.supabase_sync.sync_film(analysis_result)
+                    self._update_progress(progress_callback, 0.99, "✓ Synced to showcase platform")
+                except Exception as sync_error:
+                    # Log warning but don't fail the analysis
+                    logger.warning(f"⚠ Supabase sync failed (non-critical): {sync_error}")
+                    self._update_progress(progress_callback, 0.99, "⚠ Showcase sync skipped")
             
             self._update_progress(progress_callback, 1.0, "✅ Analysis complete!")
             
