@@ -25,7 +25,7 @@ class CallbackTask(Task):
 # --- Main Analysis Task ---
 
 @app.task(base=CallbackTask, bind=True, name="backend.tasks.video_tasks.analyze_film_complete")
-def analyze_film_complete(self, job_id: int, url: str, title_id: str = None):
+def analyze_film_complete(self, job_id: int, url: str):
     """
     Complete film analysis with all modules including Cast & Crew
     
@@ -34,7 +34,6 @@ def analyze_film_complete(self, job_id: int, url: str, title_id: str = None):
     Args:
         job_id: Analysis job ID
         url: Video URL
-        title_id: Optional Supabase title UUID (for keyframe/asset upload)
         
     Returns:
         dict: Complete analysis results with film_id
@@ -45,7 +44,7 @@ def analyze_film_complete(self, job_id: int, url: str, title_id: str = None):
     asyncio.set_event_loop(loop)
     
     try:
-        result = loop.run_until_complete(_run_analysis(self, job_id, url, title_id))
+        result = loop.run_until_complete(_run_analysis(self, job_id, url))
         return result
     except Exception as e:
         logger.error(f"❌ Analysis failed: {e}", exc_info=True)
@@ -66,7 +65,7 @@ def analyze_film_complete(self, job_id: int, url: str, title_id: str = None):
             logger.warning(f"Event loop close warning: {e}")
 
 
-async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
+async def _run_analysis(task_self, job_id: int, url: str):
     """
     Internal async function that runs the actual analysis pipeline.
     """
@@ -111,8 +110,7 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
         analysis_result = await pipeline.analyze_film(
             url, 
             job_id, 
-            title_id,           # ← 3. parametre (None olabilir)
-            update_progress     # ← 4. parametre (callback fonksiyonu)
+            progress_callback=update_progress
         )
         
         # Attempt to get film_id from analysis result or database
@@ -218,7 +216,6 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
         return {
             'job_id': job_id,
             'film_id': film_id,
-            'title_id': title_id,
             'status': 'completed',
             'title': analysis_result.get('title', 'Unknown'),
             'duration': analysis_result.get('duration', 0),

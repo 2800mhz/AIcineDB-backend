@@ -27,14 +27,16 @@ class FrameUploader:
     async def upload_keyframes(
         self,
         keyframes_dir: str,
-        title_id: str
+        title_id: str,
+        film_title: str = "Unknown"
     ) -> List[Dict]:
         """
         Upload all keyframes from directory to Supabase
         
         Args:
             keyframes_dir: Path to keyframes directory (Windows or Linux)
-            title_id: UUID of the title in Supabase
+            title_id: UUID of the title in Supabase (must be unique per film)
+            film_title: Title of the film (for logging)
             
         Returns:
             List of uploaded frame metadata
@@ -46,10 +48,11 @@ class FrameUploader:
         if not keyframes_path.is_absolute():
             keyframes_path = keyframes_path.resolve()
         
-        logger.info(f"📁 Looking for keyframes in: {keyframes_path}")
+        logger.info(f"📤 Starting keyframe upload for '{film_title}' (title_id: {title_id})")
+        logger.info(f"📁 Keyframes directory: {keyframes_path}")
         
         if not keyframes_path.exists():
-            logger.warning(f"❌ Keyframes directory not found: {keyframes_path}")
+            logger.error(f"❌ Keyframes directory not found: {keyframes_path}")
             return []
         
         # ✅ Get all .jpg files (case-insensitive)
@@ -60,13 +63,36 @@ class FrameUploader:
             
             # ✅ DEBUG: List all files in directory
             all_files = list(keyframes_path.glob("*.*"))
-            logger.warning(f"📂 Directory contains {len(all_files)} files:")
+            logger.warning(f"📂 Directory contains {len(all_files)} files")
             for f in all_files[:10]:  # Show first 10
                 logger.warning(f"  - {f.name}")
             
             return []
         
-        logger.info(f"📤 Uploading {len(keyframe_files)} keyframes to Supabase...")
+        logger.info(f"📤 Found {len(keyframe_files)} keyframes to upload")
+        
+        # ✅ CRITICAL: Clean up old keyframes for this title_id first
+        try:
+            logger.info(f"🧹 Cleaning up old keyframes for title_id: {title_id}")
+            
+            # List existing files in storage
+            existing_files = self.supabase.storage.from_('title-frames').list(f"{title_id}/")
+            
+            if existing_files:
+                logger.info(f"🧹 Found {len(existing_files)} old keyframes to remove")
+                for old_file in existing_files:
+                    old_path = f"{title_id}/{old_file['name']}"
+                    self.supabase.storage.from_('title-frames').remove([old_path])
+                logger.info(f"✓ Cleaned up old keyframes from storage")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to cleanup old keyframes from storage: {e}")
+        
+        # ✅ Delete old database records
+        try:
+            self.supabase.table('title_frames').delete().eq('title_id', title_id).execute()
+            logger.info(f"✓ Deleted old frame records from database")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to delete old frame records: {e}")
         
         uploaded_frames = []
         
@@ -116,14 +142,14 @@ class FrameUploader:
                 })
                 
                 # ✅ Log every 10th frame to avoid spam
-                if idx % 10 == 0 or idx == len(keyframe_files):
-                    logger.info(f"  ✅ Uploaded {idx}/{len(keyframe_files)} frames")
+                if idx % 10 == 0:
+                    logger.info(f"  ↗ Uploaded {idx}/{len(keyframe_files)} frames...")
                 
             except Exception as e:
-                logger.error(f"  ❌ Failed to upload frame {idx} ({keyframe_path.name}): {e}")
+                logger.error(f"❌ Failed to upload frame {idx}: {e}")
                 continue
         
-        logger.info(f"🎉 Uploaded {len(uploaded_frames)}/{len(keyframe_files)} frames successfully")
+        logger.info(f"✅ Successfully uploaded {len(uploaded_frames)}/{len(keyframe_files)} keyframes for '{film_title}'")
         
         return uploaded_frames
     
