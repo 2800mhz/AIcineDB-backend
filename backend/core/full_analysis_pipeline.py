@@ -4,10 +4,9 @@ Orchestrates all analysis modules and saves to database
 """
 import os
 import logging
-from typing import Dict, Optional
+from typing import Dict
 from pathlib import Path
 import json
-from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +52,6 @@ class FullAnalysisPipeline:
         self,
         url: str,
         job_id: int,
-        title_id: Optional[str] = None,
         progress_callback=None
     ) -> Dict:
         """
@@ -62,24 +60,12 @@ class FullAnalysisPipeline:
         Args:
             url: Video URL
             job_id: Job ID for tracking
-            title_id: Optional title ID - if provided, must be a valid UUID
             progress_callback: Function to call with progress updates
             
         Returns:
             Complete analysis results
         """
         try:
-            # ============================================================
-            # VALIDATE title_id (if provided)
-            # ============================================================
-            if title_id:
-                try:
-                    UUID(title_id)  # Validate UUID format
-                    logger.info(f"✓ Valid title_id provided: {title_id}")
-                except ValueError:
-                    logger. warning(f"⚠️ Invalid title_id format: '{title_id}' - Expected UUID, ignoring...")
-                    title_id = None  # Reset to None if invalid
-            
             # Create job directory
             job_dir = self. output_base_dir / f"job_{job_id}"
             job_dir.mkdir(parents=True, exist_ok=True)
@@ -325,10 +311,11 @@ class FullAnalysisPipeline:
             # ============================================================
             # STAGE 11.5: Upload Keyframes to Supabase (99-100%)
             # ============================================================
-            # Use either the provided title_id or the one from Supabase sync
-            final_title_id = title_id or supabase_title_id
+            # ✅ CRITICAL: ALWAYS use the title_id from Supabase sync, NEVER use a provided parameter
+            # This ensures each analysis gets unique storage
+            final_title_id = supabase_title_id
             
-            if final_title_id and self.supabase_sync. enabled:
+            if final_title_id and self.supabase_sync.enabled:
                 try:
                     self._update_progress(progress_callback, 0.99, "📤 Uploading keyframes to cloud...")
                     
@@ -337,18 +324,21 @@ class FullAnalysisPipeline:
                     
                     uploaded_frames = await uploader.upload_keyframes(
                         keyframes_dir=str(keyframes_dir),
-                        title_id=final_title_id
+                        title_id=final_title_id,
+                        film_title=analysis_result.get('title', 'Unknown')
                     )
                     
-                    logger.info(f"✅ Uploaded {len(uploaded_frames)} keyframes to Supabase")
-                    self._update_progress(progress_callback, 1.0, f"✅ Analysis complete!  ({len(uploaded_frames)} frames uploaded)")
+                    logger.info(f"✅ Uploaded {len(uploaded_frames)} keyframes to Supabase for title_id: {final_title_id}")
+                    self._update_progress(progress_callback, 1.0, f"✅ Analysis complete! ({len(uploaded_frames)} frames uploaded)")
                     
                 except Exception as upload_error:
                     logger.error(f"⚠️ Keyframe upload failed: {upload_error}")
                     self._update_progress(progress_callback, 1.0, "✅ Analysis complete! (frame upload failed)")
             else:
                 if not final_title_id:
-                    logger.info("ℹ️ No title_id available for frame upload")
+                    logger.warning("ℹ️ No title_id from Supabase sync - keyframes will not be uploaded")
+                if not self.supabase_sync.enabled:
+                    logger.info("ℹ️ Supabase sync disabled - keyframes will not be uploaded")
                 self._update_progress(progress_callback, 1.0, "✅ Analysis complete!")
             
             logger.info(f"✅ Complete analysis finished for: {video_info['title']}")

@@ -156,21 +156,14 @@ async def submit_analysis(request: AnalysisRequest):
                 }
             )
             
-            # title_id'yi al
-            title_id = getattr(request, 'title_id', None)
-            
-            # Task'ı çağır
-            # Not: analyze_film_complete dosyanın başında import edilmiş durumda, 
-            # ancak user isteğine sadık kalarak burada tekrar import edebiliriz veya
-            # mevcut importu kullanabiliriz. Temiz kod için mevcut import kullanıldı.
-            
+            # ✅ Don't pass title_id from request - let Supabase sync generate it
+            # This ensures each analysis gets unique storage
             task = analyze_film_complete.delay(
                 job['id'], 
-                str(request.url),
-                title_id=title_id
+                str(request.url)
             )
             
-            logger.info(f"📥 Created job {job['id']} (title_id: {title_id}, priority: {priority_value})")
+            logger.info(f"📥 Created job {job['id']} (priority: {priority_value})")
             
             return AnalysisJobResponse(
                 job_id=job['id'],
