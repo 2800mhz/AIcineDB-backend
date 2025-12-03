@@ -157,9 +157,46 @@ CREATE TABLE IF NOT EXISTS audio_features (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Film frames table (for extracted keyframes/photos)
+CREATE TABLE IF NOT EXISTS film_frames (
+    id SERIAL PRIMARY KEY,
+    film_id INTEGER REFERENCES films(id) ON DELETE CASCADE,
+    
+    frame_url TEXT NOT NULL,
+    frame_number INTEGER NOT NULL,
+    timestamp FLOAT NOT NULL DEFAULT 0.0,
+    ordering INTEGER DEFAULT 0,
+    
+    width INTEGER,
+    height INTEGER,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Film cast table (for actors and crew)
+CREATE TABLE IF NOT EXISTS film_cast (
+    id SERIAL PRIMARY KEY,
+    film_id INTEGER REFERENCES films(id) ON DELETE CASCADE,
+    
+    name VARCHAR(255) NOT NULL,
+    role VARCHAR(255),
+    type VARCHAR(50) DEFAULT 'actor',
+    department VARCHAR(100),
+    
+    screen_time FLOAT,
+    appearance_count INTEGER,
+    ordering INTEGER DEFAULT 0,
+    
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
 -- Indexes
 CREATE INDEX idx_films_url ON films(url);
 CREATE INDEX idx_jobs_status ON analysis_jobs(status);
 CREATE INDEX idx_jobs_created ON analysis_jobs(created_at DESC);
 CREATE INDEX idx_shots_film ON shots(film_id);
 CREATE INDEX idx_characters_film ON characters(film_id);
+CREATE INDEX idx_film_frames_film_id ON film_frames(film_id);
+CREATE INDEX idx_film_frames_ordering ON film_frames(film_id, ordering);
+CREATE INDEX idx_film_cast_film_id ON film_cast(film_id);

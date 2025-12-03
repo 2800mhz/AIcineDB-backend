@@ -540,6 +540,238 @@ async def get_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================================
+# PHOTO/FRAME MANAGEMENT ENDPOINTS
+# ============================================================================
+
+class PhotoResponse(BaseModel):
+    """Photo/frame response model"""
+    id: int
+    film_id: int
+    frame_url: str
+    frame_number: int
+    timestamp: float
+    ordering: int
+    width: Optional[int] = None
+    height: Optional[int] = None
+    created_at: Optional[datetime] = None
+
+
+class PhotoUploadRequest(BaseModel):
+    """Photo upload request"""
+    frame_url: str
+    ordering: int = 0
+    timestamp: float = 0.0
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+
+class PhotoReorderRequest(BaseModel):
+    """Photo reorder request"""
+    photo_ids: List[int]
+    new_orders: List[int]
+
+
+def _safe_timestamp(value) -> float:
+    """
+    Safely convert a timestamp value to float.
+    Handles various input types including None, strings, and numeric types.
+    """
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _frame_to_photo_response(f: Dict) -> PhotoResponse:
+    """Convert a frame dictionary to PhotoResponse model."""
+    return PhotoResponse(
+        id=f['id'],
+        film_id=f['film_id'],
+        frame_url=f['frame_url'],
+        frame_number=f['frame_number'],
+        timestamp=_safe_timestamp(f.get('timestamp')),
+        ordering=f.get('ordering', 0),
+        width=f.get('width'),
+        height=f.get('height'),
+        created_at=f.get('created_at')
+    )
+
+
+@app.get("/api/films/{film_id}/photos", response_model=List[PhotoResponse])
+async def get_film_photos(film_id: int):
+    """Get all photos/frames for a film"""
+    try:
+        async with get_db() as db:
+            from backend.database.database_operations import DatabaseOperations
+            db_ops = DatabaseOperations(db)
+            
+            # First check if film exists
+            film = await db.fetch_one(
+                query="SELECT id FROM films WHERE id = :film_id",
+                values={"film_id": film_id}
+            )
+            
+            if not film:
+                raise HTTPException(status_code=404, detail="Film not found")
+            
+            frames = await db_ops.get_film_frames(film_id)
+            
+            return [_frame_to_photo_response(f) for f in frames]
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching photos: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/films/{film_id}/photos", response_model=PhotoResponse, status_code=201)
+async def upload_photo(film_id: int, photo: PhotoUploadRequest):
+    """Upload a new photo/frame for a film (admin only)"""
+    try:
+        async with get_db() as db:
+            # Check if film exists
+            film = await db.fetch_one(
+                query="SELECT id FROM films WHERE id = :film_id",
+                values={"film_id": film_id}
+            )
+            
+            if not film:
+                raise HTTPException(status_code=404, detail="Film not found")
+            
+            # Get next frame number
+            result = await db.fetch_one(
+                query="""
+                    SELECT COALESCE(MAX(frame_number), 0) + 1 as next_frame
+                    FROM film_frames WHERE film_id = :film_id
+                """,
+                values={"film_id": film_id}
+            )
+            next_frame_number = result['next_frame'] if result else 1
+            
+            # Insert new frame
+            new_frame = await db.fetch_one(
+                query="""
+                    INSERT INTO film_frames (
+                        film_id, frame_url, frame_number, timestamp, 
+                        ordering, width, height
+                    )
+                    VALUES (
+                        :film_id, :frame_url, :frame_number, :timestamp,
+                        :ordering, :width, :height
+                    )
+                    RETURNING *
+                """,
+                values={
+                    "film_id": film_id,
+                    "frame_url": photo.frame_url,
+                    "frame_number": next_frame_number,
+                    "timestamp": photo.timestamp,
+                    "ordering": photo.ordering,
+                    "width": photo.width,
+                    "height": photo.height
+                }
+            )
+            
+            logger.info(f"📸 Added new photo to film {film_id}")
+            
+            return _frame_to_photo_response(dict(new_frame))
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading photo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/films/{film_id}/photos/{photo_id}")
+async def delete_photo(film_id: int, photo_id: int):
+    """Delete a photo/frame (admin only)"""
+    try:
+        async with get_db() as db:
+            from backend.database.database_operations import DatabaseOperations
+            db_ops = DatabaseOperations(db)
+            
+            # Check if photo exists and belongs to this film
+            photo = await db_ops.get_frame(photo_id)
+            
+            if not photo:
+                raise HTTPException(status_code=404, detail="Photo not found")
+            
+            if photo['film_id'] != film_id:
+                raise HTTPException(status_code=400, detail="Photo does not belong to this film")
+            
+            success = await db_ops.delete_frame(photo_id)
+            
+            if not success:
+                raise HTTPException(status_code=500, detail="Failed to delete photo")
+            
+            logger.info(f"🗑️ Deleted photo {photo_id} from film {film_id}")
+            
+            return {"message": "Photo deleted successfully", "photo_id": photo_id}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting photo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/films/{film_id}/photos/reorder")
+async def reorder_photos(film_id: int, reorder: PhotoReorderRequest):
+    """Reorder photos/frames for a film (admin only)"""
+    try:
+        if len(reorder.photo_ids) != len(reorder.new_orders):
+            raise HTTPException(
+                status_code=400, 
+                detail="photo_ids and new_orders must have the same length"
+            )
+        
+        async with get_db() as db:
+            from backend.database.database_operations import DatabaseOperations
+            db_ops = DatabaseOperations(db)
+            
+            # Check if film exists
+            film = await db.fetch_one(
+                query="SELECT id FROM films WHERE id = :film_id",
+                values={"film_id": film_id}
+            )
+            
+            if not film:
+                raise HTTPException(status_code=404, detail="Film not found")
+            
+            # Create mapping
+            frame_orders = dict(zip(reorder.photo_ids, reorder.new_orders))
+            
+            success = await db_ops.reorder_frames(film_id, frame_orders)
+            
+            if not success:
+                raise HTTPException(status_code=500, detail="Failed to reorder photos")
+            
+            # Get updated frames
+            frames = await db_ops.get_film_frames(film_id)
+            
+            logger.info(f"📸 Reordered {len(reorder.photo_ids)} photos for film {film_id}")
+            
+            return {
+                "message": "Photos reordered successfully",
+                "photos": [_frame_to_photo_response(f) for f in frames]
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reordering photos: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

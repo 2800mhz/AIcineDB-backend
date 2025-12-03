@@ -105,7 +105,7 @@ async def _run_analysis(task_self, job_id: int, url: str):
             )
             logger.info(f"📊 Progress: {int(progress * 100)}% - {status}")
         
-        # Run main analysis pipeline (0-75%)
+        # Run main analysis pipeline (0-70%)
         logger.info(f"🎥 Analyzing video: {url}")
         analysis_result = await pipeline.analyze_film(
             url, 
@@ -122,9 +122,42 @@ async def _run_analysis(task_self, job_id: int, url: str):
         film_id_int = film_id if isinstance(film_id, int) else None
 
         # ============================================================
-        # CAST & CREW EXTRACTION (75-85%)
+        # FRAME EXTRACTION (70-76%)
         # ============================================================
-        update_progress(0.75, "🎭 Extracting cast & crew...")
+        update_progress(0.70, "📸 Extracting key frames...")
+        
+        frames = []
+        try:
+            from backend.analyzers.visual.frame_extractor import FrameExtractor
+            
+            video_path = analysis_result.get('video_path')
+            frames_dir = analysis_result.get('frames_dir', f'./analyses/job_{job_id}/extracted_frames')
+            
+            if video_path:
+                frame_extractor = FrameExtractor()
+                frames = await frame_extractor.extract_frames(
+                    video_path=video_path,
+                    output_dir=frames_dir,
+                    interval_seconds=10,
+                    max_frames=20,
+                    generate_thumbnails=True
+                )
+                
+                analysis_result['extracted_frames'] = frames
+                logger.info(f"📸 Extracted {len(frames)} key frames")
+            else:
+                logger.warning("⚠️ No video path available for frame extraction")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Frame extraction failed: {e}")
+            analysis_result['extracted_frames'] = []
+        
+        update_progress(0.76, f"✓ Extracted {len(frames)} frames")
+
+        # ============================================================
+        # CAST & CREW EXTRACTION (77-85%)
+        # ============================================================
+        update_progress(0.77, "🎭 Extracting cast & crew...")
         
         try:
             cast_crew_result = await _extract_cast_crew(
@@ -146,7 +179,7 @@ async def _run_analysis(task_self, job_id: int, url: str):
             analysis_result['crew'] = analysis_result.get('crew', []) # Keep existing if any
 
         # ============================================================
-        # SAVE CAST & CREW TO RELATIONAL DB (85-95%)
+        # SAVE CAST & CREW TO RELATIONAL DB (85-90%)
         # This step was missing in the original logic.
         # ============================================================
         if film_id_int:
@@ -158,10 +191,10 @@ async def _run_analysis(task_self, job_id: int, url: str):
         else:
             logger.warning("Skipping relational DB save: Film ID not available.")
             
-        update_progress(0.95, "☁️ Syncing to cloud...")
+        update_progress(0.90, "☁️ Syncing to cloud...")
 
         # ============================================================
-        # SYNC TO SUPABASE (95-100%)
+        # SYNC TO SUPABASE (90-100%)
         # ============================================================
         try:
             from backend.services.supabase_sync import SupabaseSyncService
@@ -200,9 +233,19 @@ async def _run_analysis(task_self, job_id: int, url: str):
                 # ✅ CRITICAL FIX: Await must be added here!
                 result = await sync.sync_film(film_data)
                 
+                supabase_id = None
                 if result:
                     supabase_id = result.get('id', 'unknown')
                     logger.info(f"✅ Synced to Supabase - Title ID: {supabase_id}")
+                    
+                    # Upload extracted frames to Supabase Storage
+                    if frames and supabase_id:
+                        update_progress(0.95, "📤 Uploading frames to cloud storage...")
+                        try:
+                            frame_urls = await sync.upload_frames(supabase_id, frames)
+                            logger.info(f"✅ Uploaded {len(frame_urls)} frames to Supabase Storage")
+                        except Exception as upload_err:
+                            logger.warning(f"⚠️ Frame upload failed: {upload_err}")
                 else:
                     logger.warning("⚠️ Supabase sync returned None - check logs")
             else:
@@ -210,7 +253,8 @@ async def _run_analysis(task_self, job_id: int, url: str):
                 
         except Exception as e:
             logger.error(f"⚠️ Supabase sync failed: {e}", exc_info=True)
-            
+        
+        update_progress(1.0, "✅ Analysis complete!")
         logger.info(f"✅ Analysis complete - Film ID: {film_id}")
         
         return {
@@ -223,6 +267,7 @@ async def _run_analysis(task_self, job_id: int, url: str):
             'total_characters': analysis_result.get('total_characters', 0),
             'total_cast': len(analysis_result.get('cast', [])),
             'total_crew': len(analysis_result.get('crew', [])),
+            'total_frames': len(frames),
             'style': analysis_result.get('style_fingerprint'),
         }
 

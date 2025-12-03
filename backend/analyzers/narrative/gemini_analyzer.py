@@ -89,64 +89,77 @@ class GeminiNarrativeAnalyzer:
         duration: float,
         visual_context: Optional[Dict]
     ) -> str:
-        """Build comprehensive analysis prompt"""
+        """Build comprehensive analysis prompt with enhanced context"""
         
         duration_str = f"{int(duration // 60)}:{int(duration % 60):02d}"
         
-        prompt = f"""You are an expert film analyst. Analyze the following film comprehensively.
+        # Use larger transcript limit (15000 chars) for better analysis
+        transcript_text = transcript[:15000] if transcript else ""
+        
+        # If transcript is very long, include strategic portions
+        if len(transcript) > 15000:
+            beginning = transcript[:5000]
+            middle_start = len(transcript) // 2 - 2500
+            middle = transcript[middle_start:middle_start + 5000]
+            end = transcript[-5000:]
+            transcript_text = f"{beginning}\n\n[...]\n\n{middle}\n\n[...]\n\n{end}"
+        
+        prompt = f"""You are an expert film analyst and critic. Provide a comprehensive, SPECIFIC analysis of this film.
 
-**Film:** {title}
-**Duration:** {duration_str}
+**FILM:** {title}
+**DURATION:** {duration_str}
 
-**Transcript:**
-{transcript[:8000]}  # Limit to ~8000 chars to fit context
+**TRANSCRIPT/DIALOGUE:**
+{transcript_text}
 
 """
         
         if visual_context:
             prompt += f"""
-**Visual Context:**
-- Total Shots: {visual_context.get('total_shots', 'Unknown')}
-- Dominant Colors: {', '.join(visual_context.get('colors', [])[:5])}
-- Lighting: {visual_context.get('lighting', 'Unknown')}
+**VISUAL STYLE:**
+- Shot Count: {visual_context.get('total_shots', 'Unknown')} shots
+- Color Palette: {', '.join(visual_context.get('colors', [])[:5]) or 'Not analyzed'}
+- Lighting Style: {visual_context.get('lighting', 'Unknown')}
+- Visual Pacing: {'Fast' if visual_context.get('total_shots', 0) > 50 else 'Moderate' if visual_context.get('total_shots', 0) > 20 else 'Slow'}
 
 """
         
         prompt += """
-**Please provide a detailed analysis in JSON format with the following structure:**
+**ANALYSIS REQUIREMENTS:**
+1. Be SPECIFIC to THIS film - reference actual dialogue, scenes, and characters
+2. NO generic descriptions - everything must be grounded in the content
+3. Extract actual quotes from the transcript when relevant
+4. Identify the unique aspects of this film's storytelling
+
+**Provide a detailed JSON analysis:**
 
 ```json
 {
-  "summary": "Brief 2-3 sentence summary of the film",
-  "genre": "Primary genre",
-  "themes": ["theme1", "theme2", "theme3"],
-  "tone": "Overall tone/mood of the film",
+  "summary": "A compelling 2-3 sentence summary describing what THIS specific film is about, with specific details",
+  "genre": "Primary genre (be specific: e.g., 'psychological thriller' not just 'thriller')",
+  "themes": ["Specific theme 1", "Specific theme 2", "Specific theme 3"],
+  "tone": "Overall tone with nuance (e.g., 'darkly comedic with undertones of melancholy')",
   "structure": {
-    "act1": "Description of setup (first 25%)",
-    "act2": "Description of confrontation (middle 50%)",
-    "act3": "Description of resolution (final 25%)"
+    "act1": "Specific description of setup - who/what/where",
+    "act2": "Specific description of the conflict and development",
+    "act3": "Specific description of resolution or conclusion"
   },
   "story_beats": [
     {
-      "beat": "Opening Image",
-      "description": "What happens",
-      "timestamp_estimate": "0:00 - 2:00"
-    },
-    {
-      "beat": "Inciting Incident",
-      "description": "What happens",
-      "timestamp_estimate": "5:00 - 8:00"
+      "beat": "Opening",
+      "description": "What specifically happens at the start",
+      "timestamp_estimate": "0:00 - X:XX"
     }
   ],
   "character_analysis": {
-    "protagonist": "Who and their arc",
-    "antagonist": "Who and their role",
-    "supporting": "Key supporting characters"
+    "protagonist": "Who they are and their specific journey/arc",
+    "antagonist": "Who/what opposes them (can be internal)",
+    "supporting": "Key supporting elements"
   },
-  "cinematography_notes": "How visual style supports the narrative",
-  "audio_notes": "How dialogue/sound supports the story",
-  "key_quotes": ["memorable quote 1", "memorable quote 2"],
-  "emotional_arc": "How the emotional journey progresses"
+  "cinematography_notes": "How the visual style specifically supports this story",
+  "audio_notes": "How dialogue and sound contribute to the narrative",
+  "key_quotes": ["Actual quote from transcript 1", "Actual quote 2"],
+  "emotional_arc": "How the emotional journey specifically progresses in this film"
 }
 ```
 

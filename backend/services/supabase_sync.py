@@ -6,7 +6,7 @@ import os
 import re
 import json
 import logging
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -68,6 +68,21 @@ class SupabaseSyncService:
             slug = "untitled"
         
         return slug
+    
+    def _format_timestamp(self, seconds: float) -> str:
+        """
+        Format seconds to MM:SS timestamp string.
+        
+        Args:
+            seconds: Time in seconds
+            
+        Returns:
+            Formatted timestamp string (e.g., "02:30")
+        """
+        total_seconds = max(0, float(seconds or 0))
+        minutes = int(total_seconds // 60)
+        secs = int(total_seconds % 60)
+        return f"{minutes:02d}:{secs:02d}"
     
     def _get_thumbnail(self, url: str) -> Optional[str]:
         """Get thumbnail URL for video"""
@@ -481,3 +496,115 @@ class SupabaseSyncService:
         except Exception as e:
             logger.warning(f"⚠ Supabase sync failed with unexpected error: {e}")
             return None
+    
+    async def upload_frames(self, title_id: str, frames: List[Dict]) -> List[str]:
+        """
+        Upload frames to Supabase storage and insert into title_frames table.
+        
+        Args:
+            title_id: Supabase title UUID
+            frames: List of frame dicts with 'path', 'timestamp', 'frame_number', etc.
+            
+        Returns:
+            List of public URLs for uploaded frames
+        """
+        if not self.enabled:
+            logger.debug("Supabase sync is disabled, skipping frame upload")
+            return []
+        
+        if not frames:
+            logger.debug("No frames to upload")
+            return []
+        
+        import base64
+        from pathlib import Path
+        
+        logger.info(f"📤 Uploading {len(frames)} frames for title {title_id}...")
+        
+        uploaded_urls = []
+        
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                # First, delete existing frames for this title
+                try:
+                    delete_url = f"{self.rest_url}/title_frames"
+                    await client.delete(
+                        delete_url,
+                        headers=self.headers,
+                        params={"title_id": f"eq.{title_id}"}
+                    )
+                    logger.info("✓ Cleared existing frame records")
+                except Exception as e:
+                    logger.warning(f"Failed to clear existing frames: {e}")
+                
+                # Upload each frame
+                for idx, frame in enumerate(frames):
+                    try:
+                        frame_path = frame.get('path', '')
+                        if not frame_path or not Path(frame_path).exists():
+                            logger.warning(f"Frame path not found: {frame_path}")
+                            continue
+                        
+                        # Read frame file
+                        with open(frame_path, 'rb') as f:
+                            file_data = f.read()
+                        
+                        # Storage path
+                        frame_number = frame.get('frame_number', idx + 1)
+                        storage_path = f"{title_id}/frame_{frame_number:04d}.jpg"
+                        
+                        # Upload to Supabase Storage
+                        storage_url = f"{self.supabase_url}/storage/v1/object/title-frames/{storage_path}"
+                        
+                        upload_headers = {
+                            "apikey": self.supabase_key,
+                            "Authorization": f"Bearer {self.supabase_key}",
+                            "Content-Type": "image/jpeg",
+                            "x-upsert": "true"
+                        }
+                        
+                        response = await client.post(
+                            storage_url,
+                            headers=upload_headers,
+                            content=file_data
+                        )
+                        
+                        if response.status_code not in [200, 201]:
+                            logger.warning(f"Frame upload failed: {response.status_code}")
+                            continue
+                        
+                        # Get public URL
+                        public_url = f"{self.supabase_url}/storage/v1/object/public/title-frames/{storage_path}"
+                        
+                        # Insert into title_frames table
+                        frame_record = {
+                            "title_id": title_id,
+                            "frame_url": public_url,
+                            "frame_number": frame_number,
+                            "timestamp": self._format_timestamp(frame.get('timestamp', 0)),
+                            "ordering": frame.get('ordering', idx)
+                        }
+                        
+                        insert_url = f"{self.rest_url}/title_frames"
+                        await client.post(
+                            insert_url,
+                            headers=self.headers,
+                            json=frame_record
+                        )
+                        
+                        uploaded_urls.append(public_url)
+                        
+                        # Log progress every 5 frames
+                        if (idx + 1) % 5 == 0:
+                            logger.info(f"  ↗ Uploaded {idx + 1}/{len(frames)} frames...")
+                            
+                    except Exception as e:
+                        logger.warning(f"Failed to upload frame {idx + 1}: {e}")
+                        continue
+                
+                logger.info(f"✓ Successfully uploaded {len(uploaded_urls)}/{len(frames)} frames")
+                
+        except Exception as e:
+            logger.error(f"Frame upload failed: {e}")
+        
+        return uploaded_urls
