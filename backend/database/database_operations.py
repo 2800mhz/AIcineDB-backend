@@ -351,56 +351,111 @@ class DatabaseOperations:
             )
     
     async def _create_narrative(self, film_id: int, narrative: Dict):
-        """Create narrative record - FIXED VERSION"""
+        """Create narrative record - FIXED for databases library"""
         if not narrative:
+            logger.info("ℹ️ No narrative data to save")
             return
         
         logger.info(f"💾 Saving narrative analysis...")
         
-        def to_json_string(value):
-            """Convert any value to JSON string for TEXT columns"""
-            if value is None:
-                return None
-            if isinstance(value, str):
-                return value
-            if isinstance(value, (list, dict)):
-                return json.dumps(value)
-            return str(value)
-        
+        # Extract and convert values
         logline = narrative.get('logline') or narrative.get('summary') or None
-        synopsis = narrative.get('synopsis') or narrative.get('summary') or None
-        themes = to_json_string(narrative.get('themes', []))
-        genre = to_json_string(narrative.get('genre', []))
-        tone = to_json_string(narrative.get('tone', []))
+        synopsis = narrative. get('synopsis') or narrative.get('summary') or None
         conflict_type = narrative.get('conflict_type')
-        emotional_arc = to_json_string(narrative.get('emotional_arc', []))
-        story_beats = to_json_string(narrative.get('story_beats', []))
-        act_structure = to_json_string(narrative.get('act_structure') or narrative.get('structure', {}))
         
+        # Handle JSONB columns - convert to JSON string
+        themes_value = narrative.get('themes', [])
+        if isinstance(themes_value, list):
+            themes = json.dumps(themes_value)
+        elif isinstance(themes_value, str):
+            themes = themes_value
+        else:
+            themes = '[]'
+        
+        story_beats_value = narrative.get('story_beats', [])
+        if isinstance(story_beats_value, list):
+            story_beats = json.dumps(story_beats_value)
+        elif isinstance(story_beats_value, str):
+            story_beats = story_beats_value
+        else:
+            story_beats = '[]'
+        
+        act_structure_value = narrative.get('act_structure') or narrative.get('structure', {})
+        if isinstance(act_structure_value, dict):
+            act_structure = json.dumps(act_structure_value)
+        elif isinstance(act_structure_value, str):
+            act_structure = act_structure_value
+        else:
+            act_structure = '{}'
+        
+        # Handle TEXT[] columns - convert to list
+        genre_value = narrative.get('genre', [])
+        if isinstance(genre_value, str):
+            genre = [genre_value]
+        elif isinstance(genre_value, list):
+            genre = [str(x) for x in genre_value]
+        else:
+            genre = []
+        
+        tone_value = narrative.get('tone', [])
+        if isinstance(tone_value, str):
+            tone = [tone_value]
+        elif isinstance(tone_value, list):
+            tone = [str(x) for x in tone_value]
+        else:
+            tone = []
+        
+        # Handle FLOAT[] columns - convert to float list
+        emotional_arc_value = narrative.get('emotional_arc', [])
+        if isinstance(emotional_arc_value, str):
+            try:
+                emotional_arc = [float(x) for x in json.loads(emotional_arc_value)]
+            except:
+                emotional_arc = []
+        elif isinstance(emotional_arc_value, list):
+            emotional_arc = []
+            for val in emotional_arc_value:
+                try:
+                    emotional_arc.append(float(val))
+                except:
+                    continue
+        else:
+            emotional_arc = []
+        
+        # Use raw SQL with proper escaping
         query = """
             INSERT INTO narratives (
                 film_id, logline, synopsis, themes, genre, tone,
                 conflict_type, emotional_arc, story_beats, act_structure
             )
-            VALUES (:film_id, :logline, :synopsis, :themes, :genre, :tone,
-                    :conflict_type, :emotional_arc, :story_beats, :act_structure)
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9::jsonb, $10::jsonb)
         """
         
-        await self.db.execute(
-            query=query,
-            values={
-                "film_id": film_id,
-                "logline": logline,
-                "synopsis": synopsis,
-                "themes": themes,
-                "genre": genre,
-                "tone": tone,
-                "conflict_type": conflict_type,
-                "emotional_arc": emotional_arc,
-                "story_beats": story_beats,
-                "act_structure": act_structure
-            }
-        )
+        try:
+            # Use fetch instead of execute for better parameter handling
+            await self.db.execute(
+                query,
+                film_id,
+                logline,
+                synopsis,
+                themes,
+                genre,
+                tone,
+                conflict_type,
+                emotional_arc,
+                story_beats,
+                act_structure
+            )
+            logger.info(f"✓ Narrative saved successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to save narrative: {e}")
+            logger.error(f"   film_id={film_id}")
+            logger.error(f"   themes={themes[:100] if themes else None}")
+            logger.error(f"   genre={genre}")
+            logger.error(f"   tone={tone}")
+            logger.error(f"   emotional_arc={emotional_arc[:5] if emotional_arc else []}")
+            raise
     
     async def _create_transcript(self, film_id: int, transcript: Dict):
         """Create transcript record"""
