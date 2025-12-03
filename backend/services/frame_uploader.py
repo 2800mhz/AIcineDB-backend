@@ -80,9 +80,9 @@ class FrameUploader:
             
             if existing_files:
                 logger.info(f"🧹 Found {len(existing_files)} old keyframes to remove")
-                for old_file in existing_files:
-                    old_path = f"{title_id}/{old_file['name']}"
-                    self.supabase.storage.from_('title-frames').remove([old_path])
+                # Batch removal - collect all paths and remove in a single call
+                old_paths = [f"{title_id}/{old_file['name']}" for old_file in existing_files]
+                self.supabase.storage.from_('title-frames').remove(old_paths)
                 logger.info(f"✓ Cleaned up old keyframes from storage")
         except Exception as e:
             logger.warning(f"⚠️ Failed to cleanup old keyframes from storage: {e}")
