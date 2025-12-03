@@ -155,9 +155,9 @@ async def _run_analysis(task_self, job_id: int, url: str):
         update_progress(0.76, f"✓ Extracted {len(frames)} frames")
 
         # ============================================================
-        # CAST & CREW EXTRACTION (76-85%)
+        # CAST & CREW EXTRACTION (77-85%)
         # ============================================================
-        update_progress(0.76, "🎭 Extracting cast & crew...")
+        update_progress(0.77, "🎭 Extracting cast & crew...")
         
         try:
             cast_crew_result = await _extract_cast_crew(

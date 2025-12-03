@@ -69,6 +69,21 @@ class SupabaseSyncService:
         
         return slug
     
+    def _format_timestamp(self, seconds: float) -> str:
+        """
+        Format seconds to MM:SS timestamp string.
+        
+        Args:
+            seconds: Time in seconds
+            
+        Returns:
+            Formatted timestamp string (e.g., "02:30")
+        """
+        total_seconds = max(0, float(seconds or 0))
+        minutes = int(total_seconds // 60)
+        secs = int(total_seconds % 60)
+        return f"{minutes:02d}:{secs:02d}"
+    
     def _get_thumbnail(self, url: str) -> Optional[str]:
         """Get thumbnail URL for video"""
         if not url:
@@ -566,7 +581,7 @@ class SupabaseSyncService:
                             "title_id": title_id,
                             "frame_url": public_url,
                             "frame_number": frame_number,
-                            "timestamp": f"{int(frame.get('timestamp', 0) // 60):02d}:{int(frame.get('timestamp', 0) % 60):02d}",
+                            "timestamp": self._format_timestamp(frame.get('timestamp', 0)),
                             "ordering": frame.get('ordering', idx)
                         }
                         

@@ -572,6 +572,38 @@ class PhotoReorderRequest(BaseModel):
     new_orders: List[int]
 
 
+def _safe_timestamp(value) -> float:
+    """
+    Safely convert a timestamp value to float.
+    Handles various input types including None, strings, and numeric types.
+    """
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _frame_to_photo_response(f: Dict) -> PhotoResponse:
+    """Convert a frame dictionary to PhotoResponse model."""
+    return PhotoResponse(
+        id=f['id'],
+        film_id=f['film_id'],
+        frame_url=f['frame_url'],
+        frame_number=f['frame_number'],
+        timestamp=_safe_timestamp(f.get('timestamp')),
+        ordering=f.get('ordering', 0),
+        width=f.get('width'),
+        height=f.get('height'),
+        created_at=f.get('created_at')
+    )
+
+
 @app.get("/api/films/{film_id}/photos", response_model=List[PhotoResponse])
 async def get_film_photos(film_id: int):
     """Get all photos/frames for a film"""
@@ -591,17 +623,7 @@ async def get_film_photos(film_id: int):
             
             frames = await db_ops.get_film_frames(film_id)
             
-            return [PhotoResponse(
-                id=f['id'],
-                film_id=f['film_id'],
-                frame_url=f['frame_url'],
-                frame_number=f['frame_number'],
-                timestamp=f.get('timestamp', 0.0) if isinstance(f.get('timestamp'), (int, float)) else 0.0,
-                ordering=f.get('ordering', 0),
-                width=f.get('width'),
-                height=f.get('height'),
-                created_at=f.get('created_at')
-            ) for f in frames]
+            return [_frame_to_photo_response(f) for f in frames]
             
     except HTTPException:
         raise
@@ -660,17 +682,7 @@ async def upload_photo(film_id: int, photo: PhotoUploadRequest):
             
             logger.info(f"📸 Added new photo to film {film_id}")
             
-            return PhotoResponse(
-                id=new_frame['id'],
-                film_id=new_frame['film_id'],
-                frame_url=new_frame['frame_url'],
-                frame_number=new_frame['frame_number'],
-                timestamp=new_frame.get('timestamp', 0.0) if isinstance(new_frame.get('timestamp'), (int, float)) else 0.0,
-                ordering=new_frame.get('ordering', 0),
-                width=new_frame.get('width'),
-                height=new_frame.get('height'),
-                created_at=new_frame.get('created_at')
-            )
+            return _frame_to_photo_response(dict(new_frame))
             
     except HTTPException:
         raise
@@ -750,17 +762,7 @@ async def reorder_photos(film_id: int, reorder: PhotoReorderRequest):
             
             return {
                 "message": "Photos reordered successfully",
-                "photos": [PhotoResponse(
-                    id=f['id'],
-                    film_id=f['film_id'],
-                    frame_url=f['frame_url'],
-                    frame_number=f['frame_number'],
-                    timestamp=f.get('timestamp', 0.0) if isinstance(f.get('timestamp'), (int, float)) else 0.0,
-                    ordering=f.get('ordering', 0),
-                    width=f.get('width'),
-                    height=f.get('height'),
-                    created_at=f.get('created_at')
-                ) for f in frames]
+                "photos": [_frame_to_photo_response(f) for f in frames]
             }
             
     except HTTPException:

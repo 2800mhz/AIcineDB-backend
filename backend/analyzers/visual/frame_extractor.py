@@ -74,6 +74,7 @@ class FrameExtractor:
             thumbs_dir.mkdir(parents=True, exist_ok=True)
         
         frames = []
+        cap = None
         
         try:
             # Open video
@@ -81,6 +82,8 @@ class FrameExtractor:
             
             if not cap.isOpened():
                 logger.error(f"Failed to open video: {video_path}")
+                if cap is not None:
+                    cap.release()
                 return []
             
             # Get video properties
@@ -151,13 +154,16 @@ class FrameExtractor:
                 
                 frames.append(frame_data)
             
-            cap.release()
-            
             logger.info(f"✓ Extracted {len(frames)} frames to {output_dir}")
             
         except Exception as e:
             logger.error(f"Frame extraction failed: {e}")
             return []
+        
+        finally:
+            # Ensure video capture is released
+            if cap is not None:
+                cap.release()
         
         return frames
     
