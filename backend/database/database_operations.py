@@ -533,3 +533,172 @@ class DatabaseOperations:
         query = "SELECT * FROM audio_features WHERE film_id = :film_id"
         result = await self.db.fetch_one(query, values={"film_id": film_id})
         return dict(result) if result else {}
+    
+    # ============================================================================
+    # FILM FRAMES
+    # ============================================================================
+    
+    async def save_film_frames(self, film_id: int, frames: List[Dict]) -> List[int]:
+        """
+        Save extracted frames to database.
+        
+        Args:
+            film_id: Film ID
+            frames: List of frame dicts with frame_url, frame_number, timestamp, etc.
+            
+        Returns:
+            List of created frame IDs
+        """
+        if not frames:
+            return []
+        
+        logger.info(f"💾 Saving {len(frames)} frames for film {film_id}...")
+        
+        created_ids = []
+        
+        for idx, frame in enumerate(frames):
+            try:
+                query = """
+                    INSERT INTO film_frames (
+                        film_id, frame_url, frame_number, timestamp, 
+                        ordering, width, height
+                    )
+                    VALUES (
+                        :film_id, :frame_url, :frame_number, :timestamp,
+                        :ordering, :width, :height
+                    )
+                    RETURNING id
+                """
+                
+                result = await self.db.fetch_one(
+                    query=query,
+                    values={
+                        "film_id": film_id,
+                        "frame_url": frame.get('frame_url', frame.get('url', '')),
+                        "frame_number": frame.get('frame_number', idx + 1),
+                        "timestamp": frame.get('timestamp', 0.0),
+                        "ordering": frame.get('ordering', idx),
+                        "width": frame.get('width'),
+                        "height": frame.get('height')
+                    }
+                )
+                
+                if result:
+                    created_ids.append(result['id'])
+                    
+            except Exception as e:
+                logger.warning(f"Failed to save frame {idx + 1}: {e}")
+                continue
+        
+        logger.info(f"✓ Saved {len(created_ids)} frames")
+        return created_ids
+    
+    async def get_film_frames(self, film_id: int) -> List[Dict]:
+        """
+        Get all frames for a film, ordered by ordering field.
+        
+        Args:
+            film_id: Film ID
+            
+        Returns:
+            List of frame dictionaries
+        """
+        query = """
+            SELECT id, film_id, frame_url, frame_number, timestamp, 
+                   ordering, width, height, created_at
+            FROM film_frames 
+            WHERE film_id = :film_id 
+            ORDER BY ordering ASC, frame_number ASC
+        """
+        results = await self.db.fetch_all(query, values={"film_id": film_id})
+        return [dict(row) for row in results]
+    
+    async def delete_frame(self, frame_id: int) -> bool:
+        """
+        Delete a single frame.
+        
+        Args:
+            frame_id: Frame ID
+            
+        Returns:
+            True if deleted, False otherwise
+        """
+        try:
+            query = "DELETE FROM film_frames WHERE id = :frame_id RETURNING id"
+            result = await self.db.fetch_one(query, values={"frame_id": frame_id})
+            return result is not None
+        except Exception as e:
+            logger.error(f"Failed to delete frame {frame_id}: {e}")
+            return False
+    
+    async def delete_film_frames(self, film_id: int) -> int:
+        """
+        Delete all frames for a film.
+        
+        Args:
+            film_id: Film ID
+            
+        Returns:
+            Number of frames deleted
+        """
+        try:
+            query = """
+                DELETE FROM film_frames 
+                WHERE film_id = :film_id 
+                RETURNING id
+            """
+            results = await self.db.fetch_all(query, values={"film_id": film_id})
+            count = len(results)
+            logger.info(f"✓ Deleted {count} frames for film {film_id}")
+            return count
+        except Exception as e:
+            logger.error(f"Failed to delete frames for film {film_id}: {e}")
+            return 0
+    
+    async def reorder_frames(self, film_id: int, frame_orders: Dict[int, int]) -> bool:
+        """
+        Update frame ordering.
+        
+        Args:
+            film_id: Film ID
+            frame_orders: Dict mapping frame_id to new ordering value
+            
+        Returns:
+            True if successful
+        """
+        try:
+            for frame_id, new_order in frame_orders.items():
+                query = """
+                    UPDATE film_frames 
+                    SET ordering = :ordering, updated_at = NOW()
+                    WHERE id = :frame_id AND film_id = :film_id
+                """
+                await self.db.execute(
+                    query=query,
+                    values={
+                        "ordering": new_order,
+                        "frame_id": frame_id,
+                        "film_id": film_id
+                    }
+                )
+            
+            logger.info(f"✓ Reordered {len(frame_orders)} frames for film {film_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to reorder frames: {e}")
+            return False
+    
+    async def get_frame(self, frame_id: int) -> Optional[Dict]:
+        """
+        Get a single frame by ID.
+        
+        Args:
+            frame_id: Frame ID
+            
+        Returns:
+            Frame dictionary or None
+        """
+        query = "SELECT * FROM film_frames WHERE id = :frame_id"
+        result = await self.db.fetch_one(query, values={"frame_id": frame_id})
+        return dict(result) if result else None

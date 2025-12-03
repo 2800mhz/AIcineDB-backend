@@ -110,75 +110,150 @@ class GeminiNarrativeAnalyzer:
         duration: float,
         visual_context: Optional[Dict]
     ) -> str:
-        """Build context string for Gemini"""
+        """Build comprehensive context string for Gemini with enhanced details"""
+        
+        # Use larger transcript limit (15000 chars) for better context
+        transcript_text = transcript[:15000] if transcript else ""
+        
+        # Summarize if transcript is very long
+        if len(transcript) > 15000:
+            # Include beginning, middle, and end portions for better coverage
+            beginning = transcript[:5000]
+            middle_start = len(transcript) // 2 - 2500
+            middle = transcript[middle_start:middle_start + 5000]
+            end = transcript[-5000:]
+            transcript_text = f"{beginning}\n\n[...middle section...]\n\n{middle}\n\n[...end section...]\n\n{end}"
         
         context = f"""
-Film Title: {title}
-Duration: {duration/60:.1f} minutes
+FILM ANALYSIS CONTEXT
+=====================
 
-Transcript:
-{transcript[:8000]}  # Limit to avoid token limits
+**Film Title:** {title}
+**Duration:** {duration/60:.1f} minutes ({int(duration)} seconds)
+
+**TRANSCRIPT/DIALOGUE:**
+{transcript_text}
 
 """
         
         if visual_context:
             context += f"""
-Visual Context:
-- Total shots: {visual_context.get('total_shots', 'unknown')}
-- Primary colors: {', '.join(visual_context.get('colors', [])[:5])}
-- Primary lighting: {visual_context.get('lighting', 'unknown')}
+**VISUAL STYLE INFORMATION:**
+- Total Shots Detected: {visual_context.get('total_shots', 'unknown')}
+- Dominant Color Palette: {', '.join(visual_context.get('colors', [])[:5]) or 'Not analyzed'}
+- Primary Lighting Style: {visual_context.get('lighting', 'unknown')}
+- Shot Composition: {visual_context.get('shot_types', 'varied')}
+- Visual Pacing: {'Fast-paced' if visual_context.get('total_shots', 0) > 50 else 'Moderate' if visual_context.get('total_shots', 0) > 20 else 'Slow/contemplative'}
+
 """
         
         return context
     
     async def _generate_logline_synopsis(self, context: str) -> tuple:
-        """Generate logline and synopsis"""
+        """Generate high-quality, film-specific logline and synopsis"""
         
         prompt = f"""
-Based on this film:
+You are an expert film analyst and professional synopsis writer. Analyze the following film content and create compelling, SPECIFIC descriptions.
 
 {context}
 
-Generate:
-1. A one-sentence logline (20-30 words) that captures the core story
-2. A brief synopsis (100-150 words) with beginning, middle, and end
+CRITICAL REQUIREMENTS:
+1. The LOGLINE must be ONE powerful sentence (20-30 words) that captures:
+   - The protagonist or main subject
+   - The central conflict or challenge
+   - The emotional stakes or journey
+   - What makes THIS film unique
 
-Return ONLY valid JSON in this exact format:
+2. The SYNOPSIS must be 100-150 words covering:
+   - Opening: How the story begins, who we meet
+   - Development: The main conflict, challenges, or journey
+   - Resolution: How things conclude or what message emerges
+   
+3. IMPORTANT RULES:
+   - Be SPECIFIC to THIS film - reference actual dialogue, characters, or events from the transcript
+   - NO generic descriptions like "A story unfolds" or "The journey begins"
+   - Write in engaging, professional style like IMDb or Sundance Film Festival
+   - If the content is documentary-style, capture the subject and themes accurately
+   - If dialogue is minimal, focus on visual storytelling and mood
+
+Return ONLY valid JSON:
 {{
-    "logline": "...",
-    "synopsis": "..."
+    "logline": "One compelling, specific sentence about THIS film's story",
+    "synopsis": "A detailed 100-150 word synopsis based on the actual content"
 }}
 """
         
         try:
             response = self.model.generate_content(prompt)
             result = json.loads(self._extract_json(response.text))
-            return result['logline'], result['synopsis']
+            
+            logline = result.get('logline', '')
+            synopsis = result.get('synopsis', '')
+            
+            # Validate quality - reject generic responses
+            generic_phrases = ['a story unfolds', 'the journey begins', 'things change', 
+                             'life will never be the same', 'everything changes']
+            
+            if any(phrase in logline.lower() for phrase in generic_phrases):
+                # Retry with simpler prompt
+                logger.warning("Generic logline detected, retrying...")
+                return await self._retry_logline_synopsis(context)
+            
+            return logline, synopsis
+            
         except Exception as e:
             logger.error(f"Logline/synopsis generation failed: {e}")
-            return "A story unfolds.", "Synopsis unavailable."
+            return await self._retry_logline_synopsis(context)
+    
+    async def _retry_logline_synopsis(self, context: str) -> tuple:
+        """Retry with a simpler, more focused prompt"""
+        try:
+            simple_prompt = f"""
+Based on this film content, write a brief description:
+
+{context[:5000]}
+
+Create:
+1. A one-sentence summary (logline) - be specific about what happens
+2. A short synopsis (2-3 paragraphs) - describe the actual content
+
+JSON format:
+{{"logline": "...", "synopsis": "..."}}
+"""
+            response = self.model.generate_content(simple_prompt)
+            result = json.loads(self._extract_json(response.text))
+            return result.get('logline', 'Film analysis in progress.'), result.get('synopsis', 'Detailed synopsis being generated.')
+        except Exception as e:
+            logger.error(f"Retry also failed: {e}")
+            return "A unique cinematic experience.", "This film presents a distinctive visual and narrative journey. Full synopsis requires further analysis."
     
     async def _extract_themes(self, context: str) -> List[Dict]:
-        """Extract major themes"""
+        """Extract major themes with improved specificity and validation"""
         
         prompt = f"""
-Based on this film:
+You are analyzing a film's thematic content. Based on the following context, identify the key themes.
 
 {context}
 
-Identify the TOP 5 major themes present in this film.
+REQUIREMENTS:
+1. Identify 3-5 SPECIFIC themes that are ACTUALLY present in this film
+2. Each theme must be grounded in the transcript/dialogue evidence
+3. Avoid generic themes unless strongly supported by the content
+4. Minimum confidence threshold: only include themes with prevalence > 0.3
 
-For each theme, provide:
-- name: theme name (2-3 words)
-- description: brief explanation (1 sentence)
-- prevalence: how dominant is this theme (0.0 to 1.0)
+For each theme provide:
+- name: Specific theme name (2-4 words, e.g., "Corporate Corruption", "Family Loyalty", "Digital Identity")
+- description: How this theme manifests in THIS specific film (1-2 sentences with examples)
+- prevalence: How dominant (0.3 to 1.0 - must be based on actual content frequency)
 
-Common themes include: identity, power, love, isolation, freedom, corruption, 
-hope, fear, sacrifice, revenge, redemption, technology, nature, society, etc.
+AVOID these generic/overused themes unless STRONGLY evidenced:
+- "Human Connection" (too vague)
+- "Life Journey" (too generic)
+- "Change" (too broad)
 
 Return ONLY valid JSON array:
 [
-    {{"name": "...", "description": "...", "prevalence": 0.8}},
+    {{"name": "Specific Theme Name", "description": "How it appears in this film with examples", "prevalence": 0.8}},
     ...
 ]
 """
@@ -186,7 +261,19 @@ Return ONLY valid JSON array:
         try:
             response = self.model.generate_content(prompt)
             themes = json.loads(self._extract_json(response.text))
-            return themes[:5]
+            
+            # Filter themes with minimum confidence
+            validated_themes = [
+                t for t in themes 
+                if t.get('prevalence', 0) >= 0.3 and len(t.get('name', '')) > 2
+            ]
+            
+            # Ensure we have at least one theme
+            if not validated_themes and themes:
+                validated_themes = themes[:3]
+            
+            return validated_themes[:5]
+            
         except Exception as e:
             logger.error(f"Theme extraction failed: {e}")
             return [
