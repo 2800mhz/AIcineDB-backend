@@ -428,8 +428,13 @@ class SupabaseSyncService:
 
     async def sync_film(self, film_data: Dict) -> Optional[Dict]:
         """
-        Sync a film analysis to Supabase.  
-        Performs upsert based on aicinedb_film_id using Supabase's native upsert. 
+        Sync a film analysis to Supabase with proper conflict handling.
+        
+        Strategy:
+        1. Check if film exists by aicinedb_film_id or slug
+        2. If exists: UPDATE the record
+        3. If new: INSERT new record
+        4. Always return title_id for frame upload
         
         Args:
             film_data: Complete analysis result from the pipeline
@@ -443,58 +448,120 @@ class SupabaseSyncService:
         
         try:
             job_id = film_data.get('job_id')
-            logger.info(f"🔄 Syncing film to Supabase (job_id: {job_id})...")
+            title = film_data.get('title', 'Unknown')
+            slug = self._generate_slug(title)
+            
+            logger.info(f"🔄 Syncing film to Supabase: {title} (job_id: {job_id}, slug: {slug})")
             
             # Map the analysis data to Supabase schema
             title_record = self._map_analysis_to_title(film_data)
             
-            # Log what we're sending
-            logger.info(f"📤 Sending to Supabase: genres={title_record.get('genres')}, moods={title_record.get('moods')}, rating={title_record.get('rating_average')}")
-            
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # Use Supabase's native upsert with on_conflict
-                upsert_url = f"{self.rest_url}/titles"
+                # Step 1: Check if film already exists
+                existing_title = None
                 
-                # Set headers for upsert operation with UTF-8 encoding
-                upsert_headers = {
-                    **self.headers,
-                    "Prefer": "return=representation,resolution=merge-duplicates",
-                    "Content-Type": "application/json; charset=utf-8"
-                }
+                # First, try by aicinedb_film_id
+                if job_id:
+                    select_url = f"{self.rest_url}/titles"
+                    response = await client.get(
+                        select_url,
+                        headers=self.headers,
+                        params={"aicinedb_film_id": f"eq.{job_id}", "select": "*"}
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        if result and len(result) > 0:
+                            existing_title = result[0]
+                            logger.info(f"✓ Found existing title by aicinedb_film_id: {existing_title['id']}")
                 
-                # Ensure proper JSON encoding for Turkish characters
-                json_data = json.dumps(title_record, ensure_ascii=False)
+                # If not found, try by slug
+                if not existing_title:
+                    select_url = f"{self.rest_url}/titles"
+                    response = await client.get(
+                        select_url,
+                        headers=self.headers,
+                        params={"slug": f"eq.{slug}", "select": "*"}
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        if result and len(result) > 0:
+                            existing_title = result[0]
+                            logger.info(f"✓ Found existing title by slug: {existing_title['id']}")
                 
-                response = await client.post(
-                    upsert_url,
-                    headers=upsert_headers,
-                    params={"on_conflict": "aicinedb_film_id"},
-                    content=json_data.encode('utf-8')
-                )
-                response.raise_for_status()
-                result = response.json()
-                
-                if result:
-                    record_id = result[0].get('id', 'unknown')
-                    logger.info(f"✓ Synced film to Supabase (id: {record_id})")
+                # Step 2: UPDATE or INSERT
+                if existing_title:
+                    # UPDATE existing record
+                    title_id = existing_title['id']
+                    logger.info(f"📝 Updating existing title: {title_id}")
                     
-                    # ✅ YENİ: Cast & Crew'u da sync et
-                    await self._sync_cast_crew(record_id, film_data)
+                    update_url = f"{self.rest_url}/titles"
+                    update_headers = {
+                        **self.headers,
+                        "Prefer": "return=representation",
+                        "Content-Type": "application/json; charset=utf-8"
+                    }
                     
-                    return result[0]
+                    json_data = json.dumps(title_record, ensure_ascii=False)
+                    
+                    response = await client.patch(
+                        update_url,
+                        headers=update_headers,
+                        params={"id": f"eq.{title_id}"},
+                        content=json_data.encode('utf-8')
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    
+                    if result and len(result) > 0:
+                        logger.info(f"✅ Updated title in Supabase: {title_id}")
+                        record = result[0]
+                    else:
+                        logger.warning(f"⚠️ Update returned no data, using existing title_id: {title_id}")
+                        record = {'id': title_id, **title_record}
+                else:
+                    # INSERT new record
+                    logger.info(f"✨ Creating new title")
+                    
+                    insert_url = f"{self.rest_url}/titles"
+                    insert_headers = {
+                        **self.headers,
+                        "Prefer": "return=representation",
+                        "Content-Type": "application/json; charset=utf-8"
+                    }
+                    
+                    json_data = json.dumps(title_record, ensure_ascii=False)
+                    
+                    response = await client.post(
+                        insert_url,
+                        headers=insert_headers,
+                        content=json_data.encode('utf-8')
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    
+                    if result and len(result) > 0:
+                        record = result[0]
+                        title_id = record['id']
+                        logger.info(f"✅ Created new title in Supabase: {title_id}")
+                    else:
+                        logger.error(f"❌ Insert failed, no data returned")
+                        return None
                 
-                return None
+                # Step 3: Sync cast & crew
+                await self._sync_cast_crew(record['id'], film_data)
+                
+                return record
                 
         except httpx.HTTPStatusError as e:
-            logger.warning(
-                f"⚠ Supabase sync failed with HTTP error: {e.response.status_code} - {e.response.text}"
+            logger.error(
+                f"❌ Supabase sync failed with HTTP error: {e.response.status_code} - {e.response.text}"
             )
             return None
         except httpx.RequestError as e:
-            logger.warning(f"⚠ Supabase sync failed with request error: {e}")
+            logger.error(f"❌ Supabase sync failed with request error: {e}")
             return None
         except Exception as e:
-            logger.warning(f"⚠ Supabase sync failed with unexpected error: {e}")
+            logger.error(f"❌ Supabase sync failed with unexpected error: {e}", exc_info=True)
             return None
     
     async def upload_frames(self, title_id: str, frames: List[Dict]) -> List[str]:
@@ -608,3 +675,131 @@ class SupabaseSyncService:
             logger.error(f"Frame upload failed: {e}")
         
         return uploaded_urls
+
+    async def upload_keyframes(self, title_id: str, keyframes_dir: str) -> int:
+        """
+        Upload keyframes to Supabase Storage and create database records.
+        
+        This method uploads keyframes from a local directory to Supabase Storage
+        and creates corresponding records in the title_frames table.
+        
+        Args:
+            title_id: UUID of the title in Supabase
+            keyframes_dir: Local directory containing keyframe images
+            
+        Returns:
+            Number of successfully uploaded frames
+        """
+        if not self.enabled:
+            logger.debug("Supabase sync is disabled, skipping keyframe upload")
+            return 0
+        
+        if not os.path.exists(keyframes_dir):
+            logger.warning(f"Keyframes directory not found: {keyframes_dir}")
+            return 0
+        
+        # Get all .jpg and .png files
+        keyframe_files = sorted([
+            f for f in os.listdir(keyframes_dir)
+            if f.lower().endswith('.jpg') or f.lower().endswith('.png')
+        ])
+        
+        if not keyframe_files:
+            logger.warning(f"No keyframes found in {keyframes_dir}")
+            return 0
+        
+        logger.info(f"📤 Uploading {len(keyframe_files)} keyframes for title {title_id}")
+        
+        uploaded_count = 0
+        
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                # Clear existing frames for this title
+                try:
+                    delete_url = f"{self.rest_url}/title_frames"
+                    await client.delete(
+                        delete_url,
+                        headers=self.headers,
+                        params={"title_id": f"eq.{title_id}"}
+                    )
+                    logger.info("✓ Cleared existing frame records")
+                except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                    logger.warning(f"Could not clear existing frames: {e}")
+                
+                for idx, filename in enumerate(keyframe_files, 1):
+                    try:
+                        file_path = os.path.join(keyframes_dir, filename)
+                        
+                        # Extract frame number from filename
+                        # Try specific patterns first (shot_0001.jpg, frame_0001.jpg)
+                        match = re.search(r'(?:shot|frame)[_-]?(\d+)', filename, re.IGNORECASE)
+                        if not match:
+                            # Fallback to any number sequence
+                            match = re.search(r'(\d+)', filename)
+                        frame_number = int(match.group(1)) if match else idx
+                        
+                        # Read file
+                        with open(file_path, 'rb') as f:
+                            file_data = f.read()
+                        
+                        # Determine content type
+                        content_type = 'image/jpeg' if filename.lower().endswith('.jpg') else 'image/png'
+                        extension = 'jpg' if filename.lower().endswith('.jpg') else 'png'
+                        
+                        # Storage path
+                        storage_path = f"{title_id}/frame_{frame_number:04d}.{extension}"
+                        
+                        # Upload to Supabase Storage
+                        storage_url = f"{self.supabase_url}/storage/v1/object/title-frames/{storage_path}"
+                        
+                        upload_headers = {
+                            "apikey": self.supabase_key,
+                            "Authorization": f"Bearer {self.supabase_key}",
+                            "Content-Type": content_type,
+                            "x-upsert": "true"
+                        }
+                        
+                        response = await client.post(
+                            storage_url,
+                            headers=upload_headers,
+                            content=file_data
+                        )
+                        
+                        if response.status_code not in [200, 201]:
+                            logger.warning(f"Frame upload failed for {filename}: {response.status_code}")
+                            continue
+                        
+                        # Get public URL
+                        public_url = f"{self.supabase_url}/storage/v1/object/public/title-frames/{storage_path}"
+                        
+                        # Create database record
+                        # Approximate timestamp based on frame ordering (10 seconds between frames)
+                        frame_record = {
+                            "title_id": title_id,
+                            "frame_url": public_url,
+                            "frame_number": frame_number,
+                            "timestamp": self._format_timestamp(idx * 10.0),
+                            "ordering": idx
+                        }
+                        
+                        insert_url = f"{self.rest_url}/title_frames"
+                        await client.post(
+                            insert_url,
+                            headers=self.headers,
+                            json=frame_record
+                        )
+                        
+                        uploaded_count += 1
+                        
+                        if uploaded_count % 5 == 0:
+                            logger.info(f"  ↗ Uploaded {uploaded_count}/{len(keyframe_files)} frames...")
+                            
+                    except Exception as e:
+                        logger.error(f"Failed to upload {filename}: {e}")
+                        continue
+                
+        except Exception as e:
+            logger.error(f"Keyframe upload failed: {e}", exc_info=True)
+        
+        logger.info(f"✅ Successfully uploaded {uploaded_count}/{len(keyframe_files)} keyframes")
+        return uploaded_count

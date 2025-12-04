@@ -230,24 +230,41 @@ async def _run_analysis(task_self, job_id: int, url: str):
                     'crew': analysis_result.get('crew', []),
                 }
                 
-                # ✅ CRITICAL FIX: Await must be added here!
+                # Sync film (handles UPDATE or INSERT for duplicates)
                 result = await sync.sync_film(film_data)
                 
-                supabase_id = None
-                if result:
-                    supabase_id = result.get('id', 'unknown')
+                if result and result.get('id'):
+                    supabase_id = result['id']
                     logger.info(f"✅ Synced to Supabase - Title ID: {supabase_id}")
                     
-                    # Upload extracted frames to Supabase Storage
-                    if frames and supabase_id:
-                        update_progress(0.95, "📤 Uploading frames to cloud storage...")
+                    # ✅ ALWAYS try to upload frames if we have title_id
+                    update_progress(0.95, "📤 Uploading frames to cloud storage...")
+                    
+                    uploaded_frame_count = 0
+                    
+                    # First, try uploading from frames list (extracted frames)
+                    if frames:
                         try:
                             frame_urls = await sync.upload_frames(supabase_id, frames)
-                            logger.info(f"✅ Uploaded {len(frame_urls)} frames to Supabase Storage")
+                            uploaded_frame_count = len(frame_urls)
+                            logger.info(f"✅ Uploaded {uploaded_frame_count} frames to Supabase Storage")
                         except Exception as upload_err:
                             logger.warning(f"⚠️ Frame upload failed: {upload_err}")
+                    
+                    # If no frames from list, try from keyframes directory
+                    if uploaded_frame_count == 0:
+                        keyframes_dir = f"analyses/job_{job_id}/keyframes"
+                        if os.path.exists(keyframes_dir) and os.listdir(keyframes_dir):
+                            logger.info(f"📤 Uploading keyframes from directory: {keyframes_dir}")
+                            try:
+                                uploaded_frame_count = await sync.upload_keyframes(supabase_id, keyframes_dir)
+                                logger.info(f"✅ Uploaded {uploaded_frame_count} keyframes")
+                            except Exception as upload_err:
+                                logger.warning(f"⚠️ Keyframe upload failed: {upload_err}")
+                        else:
+                            logger.warning(f"⚠️ No keyframes found in {keyframes_dir}")
                 else:
-                    logger.warning("⚠️ Supabase sync returned None - check logs")
+                    logger.warning("⚠️ Supabase sync returned no title_id - keyframes will not be uploaded")
             else:
                 logger.info("ℹ️ Supabase sync disabled (SUPABASE_URL or SUPABASE_SERVICE_KEY not set)")
                 
