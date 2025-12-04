@@ -13,7 +13,8 @@ try:
     import scipy
     import scipy.signal
     if not hasattr(scipy.signal, 'hann'):
-        scipy.signal.hann = scipy.signal.windows.hann
+        if hasattr(scipy.signal, 'windows') and hasattr(scipy.signal.windows, 'hann'):
+            scipy.signal.hann = scipy.signal.windows.hann
 except ImportError:
     pass  # scipy not installed, will be handled later
 
@@ -332,7 +333,6 @@ class AudioAnalyzer:
             'mood': 'neutral',
             'intensity': 0.5,
             'pacing': 'moderate',
-            'energy': 0.5,
             'valence': 0.5
         }
         if error_message:
