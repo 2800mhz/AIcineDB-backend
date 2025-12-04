@@ -20,7 +20,7 @@ except ImportError:
 class GeminiNarrativeAnalyzer:
     """Narrative analysis using Google Gemini AI"""
     
-    def __init__(self, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, model_name: str = "gemini-2.0-flash-exp"):
         """
         Args:
             model_name: Gemini model to use
