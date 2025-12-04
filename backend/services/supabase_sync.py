@@ -723,15 +723,19 @@ class SupabaseSyncService:
                         params={"title_id": f"eq.{title_id}"}
                     )
                     logger.info("✓ Cleared existing frame records")
-                except Exception as e:
+                except (httpx.HTTPStatusError, httpx.RequestError) as e:
                     logger.warning(f"Could not clear existing frames: {e}")
                 
                 for idx, filename in enumerate(keyframe_files, 1):
                     try:
                         file_path = os.path.join(keyframes_dir, filename)
                         
-                        # Extract frame number from filename (e.g., shot_0001.jpg)
-                        match = re.search(r'(\d+)', filename)
+                        # Extract frame number from filename
+                        # Try specific patterns first (shot_0001.jpg, frame_0001.jpg)
+                        match = re.search(r'(?:shot|frame)[_-]?(\d+)', filename, re.IGNORECASE)
+                        if not match:
+                            # Fallback to any number sequence
+                            match = re.search(r'(\d+)', filename)
                         frame_number = int(match.group(1)) if match else idx
                         
                         # Read file
@@ -769,11 +773,12 @@ class SupabaseSyncService:
                         public_url = f"{self.supabase_url}/storage/v1/object/public/title-frames/{storage_path}"
                         
                         # Create database record
+                        # Approximate timestamp based on frame ordering (10 seconds between frames)
                         frame_record = {
                             "title_id": title_id,
                             "frame_url": public_url,
                             "frame_number": frame_number,
-                            "timestamp": self._format_timestamp(frame_number * 10.0),  # Approximate
+                            "timestamp": self._format_timestamp(idx * 10.0),
                             "ordering": idx
                         }
                         
@@ -786,7 +791,6 @@ class SupabaseSyncService:
                         
                         uploaded_count += 1
                         
-                        # Log progress every 5 frames
                         if uploaded_count % 5 == 0:
                             logger.info(f"  ↗ Uploaded {uploaded_count}/{len(keyframe_files)} frames...")
                             
