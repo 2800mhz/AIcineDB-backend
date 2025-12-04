@@ -7,6 +7,16 @@ import os  # ⚠️ BU EKSİKTİ - MUTLAKA EKLEYİN!
 from typing import Dict, List
 import numpy as np
 
+# Compatibility fix for scipy >= 1.8.0
+# scipy.signal.hann was moved to scipy.signal.windows.hann
+try:
+    import scipy
+    import scipy.signal
+    if not hasattr(scipy.signal, 'hann'):
+        scipy.signal.hann = scipy.signal.windows.hann
+except ImportError:
+    pass  # scipy not installed, will be handled later
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -156,7 +166,7 @@ class AudioAnalyzer:
             logger.error("❌ LIBROSA NOT INSTALLED!")
             print("="*70 + "\n")
             logger.error("="*70)
-            return self._default_features()
+            return self._default_features("Librosa not installed")
         
         try:
             # ===== YOL NORMALİZASYONU =====
@@ -197,7 +207,7 @@ class AudioAnalyzer:
                 
                 print("="*70 + "\n")
                 logger.error("="*70)
-                return self._default_features()
+                return self._default_features(f"File not found: {normalized_path}")
             
             # ===== DOSYA BOYUTU =====
             file_size = os.path.getsize(normalized_path)
@@ -209,7 +219,7 @@ class AudioAnalyzer:
                 logger.error(f"⚠️ File too small: {file_size} bytes")
                 print("="*70 + "\n")
                 logger.error("="*70)
-                return self._default_features()
+                return self._default_features(f"File too small: {file_size} bytes")
             
             # ===== LIBROSA YÜKLEME =====
             print("🎵 Loading with librosa...")
@@ -265,7 +275,7 @@ class AudioAnalyzer:
             logger.error(f"❌ EXCEPTION: {type(e).__name__}: {e}", exc_info=True)
             logger.error("="*70)
             
-            return self._default_features()
+            return self._default_features(str(e))
     
     def _classify_mood(self, features: Dict) -> str:
         tempo = features['tempo']
@@ -308,10 +318,10 @@ class AudioAnalyzer:
         else:
             return "very fast"
     
-    def _default_features(self) -> Dict:
+    def _default_features(self, error_message: str = None) -> Dict:
         print("⚠️ Returning DEFAULT features")
         logger.warning("⚠️ Returning DEFAULT audio features")
-        return {
+        result = {
             'tempo': 120.0,
             'avg_energy': 0.1,
             'max_energy': 0.3,
@@ -321,8 +331,13 @@ class AudioAnalyzer:
             'dynamic_range': 0.2,
             'mood': 'neutral',
             'intensity': 0.5,
-            'pacing': 'moderate'
+            'pacing': 'moderate',
+            'energy': 0.5,
+            'valence': 0.5
         }
+        if error_message:
+            result['error'] = f"Audio analysis failed: {error_message}"
+        return result
     
     def generate_text_embedding(self, text: str) -> np.ndarray:
         """Generate text embedding"""

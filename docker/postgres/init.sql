@@ -200,3 +200,5 @@ CREATE INDEX idx_characters_film ON characters(film_id);
 CREATE INDEX idx_film_frames_film_id ON film_frames(film_id);
 CREATE INDEX idx_film_frames_ordering ON film_frames(film_id, ordering);
 CREATE INDEX idx_film_cast_film_id ON film_cast(film_id);
+CREATE INDEX idx_film_cast_type ON film_cast(type);
+CREATE INDEX idx_film_cast_ordering ON film_cast(film_id, ordering);

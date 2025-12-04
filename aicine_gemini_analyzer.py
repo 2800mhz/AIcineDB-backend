@@ -17,13 +17,13 @@ if GEMINI_API_KEY:
 
 
 async def test_gemini_connection() -> bool:
-    """Test Gemini API connection"""
+    """Test Gemini API connection with Gemini 2.0 Flash"""
     if not GEMINI_API_KEY:
         return False
     
     try:
-        model = genai.GenerativeModel('gemini-pro')
-        response = model.generate_content("Hello")
+        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        response = model.generate_content("Hello, test connection")
         return True
     except Exception as e:
         logger.error(f"Gemini connection test failed: {e}")
@@ -40,7 +40,7 @@ class GeminiNarrativeAnalyzer:
         if not GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY environment variable not set")
         
-        self.model = genai.GenerativeModel('gemini-pro')
+        self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
         logger.info("✓ Gemini narrative analyzer initialized")
     
     async def analyze_narrative(
