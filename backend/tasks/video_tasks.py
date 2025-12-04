@@ -1,6 +1,7 @@
 """
 Complete Video Analysis Tasks with Full Integration
 Includes Cast & Crew extraction from credits and descriptions
+With Auto-Cleanup for old frames before uploading new ones
 """
 import os
 import logging
@@ -28,18 +29,7 @@ class CallbackTask(Task):
 def analyze_film_complete(self, job_id: int, url: str):
     """
     Complete film analysis with all modules including Cast & Crew
-    
-    This is the main task that orchestrates the entire analysis pipeline.
-    
-    Args:
-        job_id: Analysis job ID
-        url: Video URL
-        
-    Returns:
-        dict: Complete analysis results with film_id
     """
-    
-    # Create new event loop for this task to run async code
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -48,16 +38,12 @@ def analyze_film_complete(self, job_id: int, url: str):
         return result
     except Exception as e:
         logger.error(f"❌ Analysis failed: {e}", exc_info=True)
-        
-        # Try to update job status to failed
         try:
             loop.run_until_complete(_update_job_failed(job_id, str(e)))
         except Exception as db_error:
             logger.error(f"Failed to update job status: {db_error}")
-        
         raise e
     finally:
-        # Clean up event loop
         try:
             loop.close()
             logger.info("🔄 Event loop closed")
@@ -65,22 +51,91 @@ def analyze_film_complete(self, job_id: int, url: str):
             logger.warning(f"Event loop close warning: {e}")
 
 
+async def _cleanup_old_frames(sync, supabase_id: str):
+    """
+    Clean up old frames from Supabase before uploading new ones.
+    
+    Args:
+        sync: SupabaseSyncService instance
+        supabase_id: Title UUID in Supabase
+    """
+    import httpx
+    
+    if not sync.enabled or not supabase_id:
+        return
+    
+    logger.info(f"🧹 Cleaning up old frames for title: {supabase_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # 1. Delete old frame records from database
+            delete_url = f"{sync.rest_url}/title_frames"
+            response = await client.delete(
+                delete_url,
+                headers=sync.headers,
+                params={"title_id": f"eq.{supabase_id}"}
+            )
+            
+            if response.status_code in [200, 204]:
+                logger.info(f"✓ Deleted old frame records from database")
+            else:
+                logger.warning(f"Frame record deletion returned: {response.status_code}")
+            
+            # 2. List and delete old storage files
+            list_url = f"{sync.supabase_url}/storage/v1/object/list/title-frames"
+            list_response = await client.post(
+                list_url,
+                headers={
+                    "apikey": sync.supabase_key,
+                    "Authorization": f"Bearer {sync.supabase_key}",
+                    "Content-Type": "application/json"
+                },
+                json={"prefix": f"{supabase_id}/"}
+            )
+            
+            if list_response.status_code == 200:
+                files = list_response.json()
+                
+                if files and len(files) > 0:
+                    # Build list of file paths to delete
+                    paths_to_delete = [f"{supabase_id}/{f['name']}" for f in files if f.get('name')]
+                    
+                    if paths_to_delete:
+                        # Delete files from storage
+                        delete_storage_url = f"{sync.supabase_url}/storage/v1/object/title-frames"
+                        delete_response = await client.delete(
+                            delete_storage_url,
+                            headers={
+                                "apikey": sync.supabase_key,
+                                "Authorization": f"Bearer {sync.supabase_key}",
+                                "Content-Type": "application/json"
+                            },
+                            json={"prefixes": paths_to_delete}
+                        )
+                        
+                        logger.info(f"✓ Deleted {len(paths_to_delete)} old storage files")
+                else:
+                    logger.info("ℹ️ No old storage files to delete")
+            else:
+                logger.warning(f"Could not list storage files: {list_response.status_code}")
+                
+    except Exception as e:
+        logger.warning(f"⚠️ Cleanup warning (non-fatal): {e}")
+
+
 async def _run_analysis(task_self, job_id: int, url: str):
     """
     Internal async function that runs the actual analysis pipeline.
     """
-    # Imports should be inside async function if they rely on certain environments/settings
     from backend.core.full_analysis_pipeline import FullAnalysisPipeline
     from backend.database.connection import get_task_db
     from backend.database.database_operations import DatabaseOperations
     
     logger.info(f"🎬 Starting complete analysis for job {job_id}")
     
-    # Use context manager for database connection
     async with get_task_db() as db:
         db_ops = DatabaseOperations(db)
         
-        # Update job status to processing
         await db_ops.update_job_status(
             job_id,
             status='processing',
@@ -89,10 +144,8 @@ async def _run_analysis(task_self, job_id: int, url: str):
             celery_task_id=task_self.request.id
         )
         
-        # Initialize pipeline
         pipeline = FullAnalysisPipeline()
         
-        # Progress callback function for Celery status updates
         def update_progress(progress: float, status: str):
             task_self.update_state(
                 state="PROGRESS",
@@ -113,10 +166,8 @@ async def _run_analysis(task_self, job_id: int, url: str):
             progress_callback=update_progress
         )
         
-        # Attempt to get film_id from analysis result or database
         film_id = analysis_result.get('film_id')
         if not film_id or film_id == 'Unknown':
-            # Assuming db_ops has a method to retrieve film_id associated with the job
             film_id = await db_ops.get_film_id_from_job(job_id)
         
         film_id_int = film_id if isinstance(film_id, int) else None
@@ -142,7 +193,6 @@ async def _run_analysis(task_self, job_id: int, url: str):
                     max_frames=20,
                     generate_thumbnails=True
                 )
-                
                 analysis_result['extracted_frames'] = frames
                 logger.info(f"📸 Extracted {len(frames)} key frames")
             else:
@@ -164,23 +214,18 @@ async def _run_analysis(task_self, job_id: int, url: str):
                 analysis_result=analysis_result,
                 url=url
             )
-            
-            # Merge cast & crew into analysis result
             analysis_result['cast'] = cast_crew_result.get('cast', [])
             analysis_result['crew'] = cast_crew_result.get('crew', [])
             analysis_result['cast_crew_sources'] = cast_crew_result.get('sources', [])
             analysis_result['cast_crew_confidence'] = cast_crew_result.get('confidence', 0.0)
-            
             logger.info(f"🎭 Found {len(analysis_result['cast'])} cast, {len(analysis_result['crew'])} crew")
-            
         except Exception as e:
             logger.warning(f"⚠️ Cast & crew extraction failed: {e}")
-            analysis_result['cast'] = analysis_result.get('cast', []) # Keep existing if any
-            analysis_result['crew'] = analysis_result.get('crew', []) # Keep existing if any
+            analysis_result['cast'] = analysis_result.get('cast', [])
+            analysis_result['crew'] = analysis_result.get('crew', [])
 
         # ============================================================
         # SAVE CAST & CREW TO RELATIONAL DB (85-90%)
-        # This step was missing in the original logic.
         # ============================================================
         if film_id_int:
             update_progress(0.85, "💾 Saving cast & crew to relational DB...")
@@ -204,7 +249,6 @@ async def _run_analysis(task_self, job_id: int, url: str):
             if sync.enabled:
                 logger.info(f"🔄 Supabase sync enabled - Starting sync...")
                 
-                # Prepare complete film data
                 film_data = {
                     'job_id': str(job_id),
                     'title': analysis_result.get('title', 'Unknown'),
@@ -214,8 +258,6 @@ async def _run_analysis(task_self, job_id: int, url: str):
                     'description': analysis_result.get('description', ''),
                     'year': analysis_result.get('year'),
                     'thumbnail': analysis_result.get('thumbnail'),
-                    
-                    # Analysis data
                     'narrative': analysis_result.get('narrative', {}),
                     'audio_features': analysis_result.get('audio_features', {}),
                     'style': analysis_result.get('style', {}),
@@ -224,25 +266,26 @@ async def _run_analysis(task_self, job_id: int, url: str):
                     'scenes': analysis_result.get('scenes', []),
                     'color_palette': analysis_result.get('color_palette', {}),
                     'style_fingerprint': analysis_result.get('style_fingerprint'),
-                    
-                    # Cast & crew
                     'cast': analysis_result.get('cast', []),
                     'crew': analysis_result.get('crew', []),
                 }
                 
-                # Sync film (handles UPDATE or INSERT for duplicates)
                 result = await sync.sync_film(film_data)
                 
                 if result and result.get('id'):
                     supabase_id = result['id']
                     logger.info(f"✅ Synced to Supabase - Title ID: {supabase_id}")
                     
-                    # ✅ ALWAYS try to upload frames if we have title_id
+                    # ✅ CLEANUP OLD FRAMES BEFORE UPLOADING NEW ONES
+                    update_progress(0.93, "🧹 Cleaning up old frames...")
+                    await _cleanup_old_frames(sync, supabase_id)
+                    
                     update_progress(0.95, "📤 Uploading frames to cloud storage...")
                     
                     uploaded_frame_count = 0
+                    total_duration = analysis_result.get('duration', 0)
                     
-                    # First, try uploading from frames list (extracted frames)
+                    # First, try uploading from frames list
                     if frames:
                         try:
                             frame_urls = await sync.upload_frames(supabase_id, frames)
@@ -253,16 +296,47 @@ async def _run_analysis(task_self, job_id: int, url: str):
                     
                     # If no frames from list, try from keyframes directory
                     if uploaded_frame_count == 0:
-                        keyframes_dir = f"analyses/job_{job_id}/keyframes"
+                        keyframes_dir = analysis_result.get('keyframes_dir')
+                        
+                        if not keyframes_dir:
+                            keyframes_dir = f"analyses/job_{job_id}/keyframes"
+                        
+                        keyframes_dir = os.path.abspath(keyframes_dir)
+                        logger.info(f"📁 Looking for keyframes in: {keyframes_dir}")
+                        
                         if os.path.exists(keyframes_dir) and os.listdir(keyframes_dir):
                             logger.info(f"📤 Uploading keyframes from directory: {keyframes_dir}")
                             try:
-                                uploaded_frame_count = await sync.upload_keyframes(supabase_id, keyframes_dir)
+                                uploaded_frame_count = await sync.upload_keyframes(
+                                    supabase_id, 
+                                    keyframes_dir,
+                                    total_duration=total_duration
+                                )
                                 logger.info(f"✅ Uploaded {uploaded_frame_count} keyframes")
                             except Exception as upload_err:
                                 logger.warning(f"⚠️ Keyframe upload failed: {upload_err}")
                         else:
                             logger.warning(f"⚠️ No keyframes found in {keyframes_dir}")
+                            
+                            # Try alternative paths
+                            alt_paths = [
+                                os.path.join(os.getcwd(), f"analyses/job_{job_id}/keyframes"),
+                                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), f"analyses/job_{job_id}/keyframes"),
+                            ]
+                            
+                            for alt_path in alt_paths:
+                                if os.path.exists(alt_path) and os.listdir(alt_path):
+                                    logger.info(f"📤 Found keyframes at alternative path: {alt_path}")
+                                    try:
+                                        uploaded_frame_count = await sync.upload_keyframes(
+                                            supabase_id, 
+                                            alt_path,
+                                            total_duration=total_duration
+                                        )
+                                        logger.info(f"✅ Uploaded {uploaded_frame_count} keyframes from alt path")
+                                        break
+                                    except Exception as upload_err:
+                                        logger.warning(f"⚠️ Alt path upload failed: {upload_err}")
                 else:
                     logger.warning("⚠️ Supabase sync returned no title_id - keyframes will not be uploaded")
             else:
@@ -290,16 +364,7 @@ async def _run_analysis(task_self, job_id: int, url: str):
 
 
 async def _extract_cast_crew(analysis_result: dict, url: str) -> dict:
-    """
-    Extract cast & crew from video description and end credits using the Extractor.
-    
-    Args:
-        analysis_result: Current analysis results
-        url: Original video URL
-        
-    Returns:
-        Dict with cast and crew lists
-    """
+    """Extract cast & crew from video description and end credits."""
     from backend.analyzers.cast_crew_extractor import CastCrewExtractor
     
     gemini_api_key = os.getenv('GEMINI_API_KEY')
@@ -309,38 +374,22 @@ async def _extract_cast_crew(analysis_result: dict, url: str) -> dict:
     
     extractor = CastCrewExtractor(gemini_api_key)
     
-    # Get data from analysis result
-    video_path = analysis_result.get('video_path', '')
-    description = analysis_result.get('description', '')
-    duration = analysis_result.get('duration', 0)
-    frames_dir = analysis_result.get('frames_dir', '')
-    characters = analysis_result.get('characters', [])
-    
-    # Run extraction
     result = await extractor.extract_all(
-        video_path=video_path,
-        description=description,
-        duration=duration,
-        frames_dir=frames_dir,
-        characters=characters
+        video_path=analysis_result.get('video_path', ''),
+        description=analysis_result.get('description', ''),
+        duration=analysis_result.get('duration', 0),
+        frames_dir=analysis_result.get('frames_dir', ''),
+        characters=analysis_result.get('characters', [])
     )
     
     return result
 
 
 async def _save_cast_crew(db_ops, film_id: int, analysis_result: dict):
-    """
-    Save cast & crew to relational database (film_cast table).
-    
-    Args:
-        db_ops: Database operations instance
-        film_id: Film ID
-        analysis_result: Analysis results with cast/crew
-    """
+    """Save cast & crew to relational database."""
     cast = analysis_result.get('cast', [])
     crew = analysis_result.get('crew', [])
     
-    # 1. Clear existing cast & crew to prevent duplicates on rerun
     try:
         await db_ops.db.execute(
             "DELETE FROM film_cast WHERE film_id = :film_id",
@@ -350,10 +399,8 @@ async def _save_cast_crew(db_ops, film_id: int, analysis_result: dict):
     except Exception as e:
         logger.warning(f"Failed to clear existing cast/crew: {e}")
 
-    # 2. Save cast members
     for i, member in enumerate(cast):
         try:
-            # Assuming 'film_cast' table is used for both cast and crew
             await db_ops.db.execute(
                 """
                 INSERT INTO film_cast (
@@ -369,7 +416,7 @@ async def _save_cast_crew(db_ops, film_id: int, analysis_result: dict):
                     'name': member.get('name', 'Unknown'),
                     'role': member.get('role', 'Actor'),
                     'type': member.get('type', 'actor'),
-                    'department': 'acting', # Assuming all cast members are acting department
+                    'department': 'acting',
                     'screen_time': member.get('screen_time'),
                     'appearance_count': member.get('appearance_count'),
                     'ordering': i + 1
@@ -378,7 +425,6 @@ async def _save_cast_crew(db_ops, film_id: int, analysis_result: dict):
         except Exception as e:
             logger.warning(f"Failed to save cast member {member.get('name')}: {e}")
     
-    # 3. Save crew members
     for i, member in enumerate(crew):
         try:
             await db_ops.db.execute(
@@ -392,11 +438,8 @@ async def _save_cast_crew(db_ops, film_id: int, analysis_result: dict):
                 {
                     'film_id': film_id,
                     'name': member.get('name', 'Unknown'),
-                    # Use provided role, default to 'Crew'
                     'role': member.get('role', 'Crew'),
-                    # Set type as a standard 'crew' value
-                    'type': 'crew', 
-                    # Use provided department, default to 'production'
+                    'type': 'crew',
                     'department': member.get('department', 'production'),
                     'ordering': i + 1
                 }
@@ -408,10 +451,7 @@ async def _save_cast_crew(db_ops, film_id: int, analysis_result: dict):
 
 
 async def _update_job_failed(job_id: int, error_message: str):
-    """
-    Update job status to failed. 
-    Runs in its own database context. 
-    """
+    """Update job status to failed."""
     from backend.database.connection import get_task_db
     from backend.database.database_operations import DatabaseOperations
     
@@ -433,18 +473,7 @@ async def _update_job_failed(job_id: int, error_message: str):
 
 @app.task(name="backend.tasks.video_tasks.extract_cast_crew_only")
 def extract_cast_crew_only(film_id: int, url: str, description: str = ""):
-    """
-    Extract cast & crew for an existing film
-    Useful for re-processing or updating cast info
-    
-    Args:
-        film_id: Existing film ID
-        url: Video URL
-        description: Video description
-        
-    Returns:
-        dict: Cast & crew results
-    """
+    """Extract cast & crew for an existing film"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -470,7 +499,6 @@ async def _extract_cast_crew_standalone(film_id: int, url: str, description: str
     async with get_task_db() as db:
         db_ops = DatabaseOperations(db)
         
-        # Get existing film data
         film = await db.fetch_one(
             "SELECT * FROM films WHERE id = :film_id",
             {'film_id': film_id}
@@ -479,29 +507,25 @@ async def _extract_cast_crew_standalone(film_id: int, url: str, description: str
         if not film:
             return {'error': 'Film not found'}
         
-        # Get characters (needed for character mapping)
         characters = await db.fetch_all(
             "SELECT * FROM characters WHERE film_id = :film_id",
             {'film_id': film_id}
         )
         
-        # Extract cast & crew
         extractor = CastCrewExtractor(gemini_api_key)
         result = await extractor.extract_all(
-            video_path='', # Not available in standalone mode
+            video_path='',
             description=description or film.get('description', ''),
             duration=film.get('duration', 0),
-            frames_dir='', # Not available in standalone mode
+            frames_dir='',
             characters=[dict(c) for c in characters]
         )
         
-        # Save to database
         analysis_result = {
             'cast': result.get('cast', []),
             'crew': result.get('crew', [])
         }
         
-        # Save new cast & crew
         await _save_cast_crew(db_ops, film_id, analysis_result)
         
         return {

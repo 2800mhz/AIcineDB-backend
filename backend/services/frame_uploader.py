@@ -174,4 +174,4 @@ class FrameUploader:
         minutes = int(timestamp_sec // 60)
         seconds = int(timestamp_sec % 60)
         
-        return f"{minutes:02d}:{seconds:02d}"
+        return float(timestamp_sec)  # Float: 3.0

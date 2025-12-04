@@ -69,20 +69,23 @@ class SupabaseSyncService:
         
         return slug
     
-    def _format_timestamp(self, seconds: float) -> str:
+    def _format_timestamp(self, timestamp) -> float:
         """
-        Format seconds to MM:SS timestamp string.
+        Convert timestamp to float seconds. 
+        Handles both "MM:SS" strings and numeric values.
+        """
+        if isinstance(timestamp, (int, float)):
+            return float(timestamp)
         
-        Args:
-            seconds: Time in seconds
-            
-        Returns:
-            Formatted timestamp string (e.g., "02:30")
-        """
-        total_seconds = max(0, float(seconds or 0))
-        minutes = int(total_seconds // 60)
-        secs = int(total_seconds % 60)
-        return f"{minutes:02d}:{secs:02d}"
+        if isinstance(timestamp, str):
+            # Parse "MM:SS" or "HH:MM:SS" format
+            parts = timestamp.split(':')
+            if len(parts) == 2:  # MM:SS
+                return float(parts[0]) * 60 + float(parts[1])
+            elif len(parts) == 3:  # HH:MM:SS
+                return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+        
+        return 0.0  # Fallback
     
     def _get_thumbnail(self, url: str) -> Optional[str]:
         """Get thumbnail URL for video"""
