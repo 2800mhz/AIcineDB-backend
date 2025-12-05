@@ -22,7 +22,7 @@ async def test_gemini_connection() -> bool:
         return False
     
     try:
-        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        model = genai.GenerativeModel('gemini-2.0-flash-lite')
         response = model.generate_content("Hello, test connection")
         return True
     except Exception as e:
@@ -40,7 +40,7 @@ class GeminiNarrativeAnalyzer:
         if not GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY environment variable not set")
         
-        self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        self.model = genai.GenerativeModel('gemini-2.0-flash-lite')
         logger.info("✓ Gemini narrative analyzer initialized")
     
     async def analyze_narrative(

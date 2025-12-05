@@ -14,11 +14,29 @@ load_dotenv()
 
 import httpx
 
+# ✅ YENİ: supabase kütüphanesi import
+try:
+    from supabase import create_client, Client
+    SUPABASE_SDK_AVAILABLE = True
+except ImportError:
+    SUPABASE_SDK_AVAILABLE = False
+    Client = None
+
 logger = logging.getLogger(__name__)
 
 
 class SupabaseSyncService:
     """Handles syncing analyzed films to Supabase for the Lovable frontend"""
+    
+    # ✅ YENİ: Singleton pattern için class attribute'lar
+    _instance: Optional['SupabaseSyncService'] = None
+    _supabase_client: Optional['Client'] = None
+    
+    def __new__(cls):
+        """Singleton pattern"""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
     
     def __init__(self):
         """
@@ -42,6 +60,22 @@ class SupabaseSyncService:
             logger.info("✓ Supabase sync service initialized")
         else:
             logger.warning("⚠ Supabase sync disabled: SUPABASE_URL or SUPABASE_SERVICE_KEY not configured")
+    
+    # ✅ YENİ: supabase property eklendi
+    @property
+    def supabase(self) -> Optional['Client']:
+        """Get Supabase client instance (lazy initialization)"""
+        if self._supabase_client is None and self.enabled:
+            if not SUPABASE_SDK_AVAILABLE:
+                logger.error("❌ supabase-py SDK not installed. Run: pip install supabase")
+                return None
+            try:
+                self._supabase_client = create_client(self.supabase_url, self.supabase_key)
+                logger.info("✅ Supabase SDK client initialized")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize Supabase SDK client: {e}")
+                return None
+        return self._supabase_client
     
     def _generate_slug(self, title: str) -> str:
         """Create a URL-friendly slug from the title."""
@@ -241,7 +275,7 @@ class SupabaseSyncService:
         scenes = len(film_data.get('scenes', []))
         
         if shots or characters or scenes:
-            parts.append(f"Technical: {shots} shots, {characters} characters, {scenes} scenes detected.")
+            parts.append(f"Technical: {shots} shots, {characters} characters, {scenes} detected.")
         
         if parts:
             return " ".join(parts)
@@ -806,3 +840,19 @@ class SupabaseSyncService:
         
         logger.info(f"✅ Successfully uploaded {uploaded_count}/{len(keyframe_files)} keyframes")
         return uploaded_count
+
+
+# ✅ YENİ: Singleton instance ve helper fonksiyon
+_supabase_service: Optional[SupabaseSyncService] = None
+
+def get_supabase_client() -> Optional['Client']:
+    """
+    Get Supabase client instance.
+    
+    Returns:
+        Supabase Client instance or None if not configured
+    """
+    global _supabase_service
+    if _supabase_service is None:
+        _supabase_service = SupabaseSyncService()
+    return _supabase_service.supabase

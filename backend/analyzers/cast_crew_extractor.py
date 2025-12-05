@@ -22,8 +22,8 @@ class CastCrewExtractor:
     def __init__(self, gemini_api_key: str):
         """Initialize with Gemini API"""
         genai. configure(api_key=gemini_api_key)
-        self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
-        self. vision_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        self.model = genai.GenerativeModel('gemini-2.0-flash-lite')
+        self. vision_model = genai.GenerativeModel('gemini-2.0-flash-lite')
     
     async def extract_all(
         self,

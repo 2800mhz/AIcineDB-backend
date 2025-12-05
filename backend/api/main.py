@@ -2,12 +2,16 @@
 AI Cine Analyzer - Main FastAPI Application - FIXED
 Modern film analysis platform with Gemini AI
 """
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Query
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, UploadFile, File, Form
+from backend.utils.auth import verify_admin, get_admin_emails
+
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import logging
+from fastapi. security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends
 import json
 
 from backend.database.connection import get_db, init_db
@@ -163,7 +167,7 @@ async def submit_analysis(request: AnalysisRequest):
                 str(request.url)
             )
             
-            logger.info(f"📥 Created job {job['id']} (priority: {priority_value})")
+            logger.info(f"🔥 Created job {job['id']} (priority: {priority_value})")
             
             return AnalysisJobResponse(
                 job_id=job['id'],
@@ -532,6 +536,8 @@ async def search_films(
 # STATS ENDPOINT
 # ============================================================================
 
+security = HTTPBearer()
+
 @app.get("/api/stats")
 async def get_stats():
     """Get platform statistics"""
@@ -567,6 +573,166 @@ async def get_stats():
             
     except Exception as e:
         logger.error(f"Error fetching stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# ADMIN - PHOTO MANAGEMENT (REVISED)
+# ============================================================
+
+async def verify_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify user is admin"""
+    try:
+        from backend.services.supabase_sync import get_supabase_client
+        supabase = get_supabase_client()
+        
+        # Get user from token
+        user = supabase. auth.get_user(credentials. credentials)
+        
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        
+        # Check if admin
+        user_email = user.user.email
+        user_role = user.user.user_metadata.get('role')
+        
+        is_admin = (
+            user_role == 'admin' or 
+            user_email == 'hamburg31cisi@gmail.com'
+        )
+        
+        if not is_admin:
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        return user. user
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Auth failed: {e}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
+
+@app.delete("/api/admin/titles/{title_id}/photos/{frame_id}")
+async def admin_delete_photo(
+    title_id: str, 
+    frame_id: str,
+    current_user = Depends(verify_admin)  # ← Auth kontrolü eklendi
+):
+    
+    """Delete photo from Supabase"""
+    try:
+        # ✅ YENİ: Doğru import
+        from backend.services.supabase_sync import get_supabase_client
+        supabase = get_supabase_client()
+        
+        logger.info(f"🗑️ DELETE: title={title_id}, frame={frame_id}")
+        
+        # Get frame
+        response = supabase.table('title_frames').select('*').eq('id', frame_id).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Frame not found")
+        
+        frame = response.data[0]
+        frame_url = frame.get('frame_url', '')
+        
+        # Delete from DB
+        supabase.table('title_frames').delete().eq('id', frame_id).execute()
+        
+        # Delete from storage
+        if '/title-frames/' in frame_url:
+            path = frame_url.split('/title-frames/')[-1].split('?')[0]
+            try:
+                supabase.storage.from_('title-frames').remove([path])
+                logger.info(f"✓ Deleted storage: {path}")
+            except Exception as e:
+                logger.warning(f"Storage delete failed: {e}")
+        
+        logger.info(f"✅ Deleted {frame_id}")
+        return {"success": True, "message": "Photo deleted"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Delete failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/admin/titles/{title_id}/photos/reorder")
+async def admin_reorder_photos(
+    title_id: str, 
+    reorder_data: dict,
+    current_user = Depends(verify_admin)  # ← Auth kontrolü eklendi
+):
+    """Reorder photos"""
+    try:
+        from backend.services.supabase_sync import get_supabase_client
+        supabase = get_supabase_client()
+        
+        frame_ids = reorder_data.get('frame_ids', [])
+        if not frame_ids:
+            raise HTTPException(status_code=400, detail="frame_ids required")
+        
+        logger.info(f"📸 Reorder {len(frame_ids)} photos for title {title_id}")
+        
+        for idx, frame_id in enumerate(frame_ids):
+            supabase.table('title_frames').update({'ordering': idx + 1}).eq('id', frame_id).execute()
+        
+        logger.info(f"✅ Reordered {len(frame_ids)} photos")
+        return {"success": True, "message": f"Reordered {len(frame_ids)} photos", "count": len(frame_ids)}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Reorder failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/titles/{title_id}/photos/upload")
+async def admin_upload_photo(
+    title_id: str, 
+    file: UploadFile = File(...), 
+    ordering: int = Form(0),
+    current_user = Depends(verify_admin)  # ← Auth kontrolü eklendi
+):
+
+    """Upload new photo"""
+    if not file.content_type.startswith('image/'):
+        raise HTTPException(status_code=400, detail="Only images allowed")
+    
+    try:
+        from backend.services.supabase_sync import get_supabase_client
+        import uuid
+        
+        supabase = get_supabase_client()
+        
+        ext = file.filename.split('.')[-1] if '.' in file.filename else 'jpg'
+        filename = f"{title_id}/manual_{uuid.uuid4().hex[:8]}.{ext}"
+        
+        file_bytes = await file.read()
+        
+        supabase.storage.from_('title-frames').upload(
+            filename, file_bytes,
+            file_options={'content-type': file.content_type, 'upsert': 'true'}
+        )
+        
+        url = supabase.storage.from_('title-frames').get_public_url(filename)
+        
+        data = {
+            'title_id': title_id,
+            'frame_url': url,
+            'frame_number': 0,
+            'timestamp': 0.0,
+            'ordering': ordering
+        }
+        
+        response = supabase.table('title_frames').insert(data).execute()
+        
+        logger.info(f"📸 Uploaded photo to title {title_id}")
+        return {"success": True, "frame": response.data[0] if response.data else None}
+        
+    except Exception as e:
+        logger.error(f"❌ Upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

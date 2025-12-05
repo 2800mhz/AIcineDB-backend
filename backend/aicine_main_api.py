@@ -4,6 +4,7 @@ Modern film analysis platform with Gemini AI
 """
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, Depends, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
+from backend.services.ai_banner_generator import ai_banner_service
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, HttpUrl, Field
 from typing import List, Optional, Dict, Any
@@ -722,3 +723,104 @@ if __name__ == "__main__":
         port=8000,
         reload=True
     )
+
+# ============================================================
+# AI BANNER GENERATION
+# ============================================================
+
+from backend.services.ai_banner_generator import ai_banner_service
+
+@app.get("/api/ai-banner/options")
+async def get_banner_options():
+    """Get available AI models and options"""
+    return ai_banner_service.get_options()
+
+
+@app.post("/api/ai-banner/generate")
+def generate_ai_banner(request: dict):  # ← async kaldırıldı
+    """Generate AI banner (synchronous)
+    
+    Body: {
+        "category": "cinematic",
+        "style": "dramatic",
+        "element": "camera",
+        "color_palette": "warm",
+        "num_variations": 3,
+        "preferred_model": "sd-turbo"  // optional
+    }
+    """
+    try:
+        from backend.services.supabase_sync import SupabaseSyncService
+        import uuid
+        
+        # Generate banners (synchronous call)
+        variations = ai_banner_service.generate_banner(
+            category=request. get('category', 'cinematic'),
+            style=request.get('style', 'dramatic'),
+            element=request.get('element'),
+            color_palette=request. get('color_palette', 'vibrant'),
+            num_variations=request.get('num_variations', 3),
+            preferred_model=request.get('preferred_model')
+        )
+        
+        # Upload to Supabase
+        sync = SupabaseSyncService()
+        banner_urls = []
+        user_id = 'test_user'  # TODO: Get from auth
+        
+        for idx, image_bytes in enumerate(variations):
+            filename = f"banners/{user_id}/ai_{uuid.uuid4().hex[:8]}_{idx}.jpg"
+            
+            sync.supabase.storage.from_('user-content'). upload(
+                filename,
+                image_bytes,
+                file_options={'content-type': 'image/jpeg', 'upsert': 'true'}
+            )
+            
+            public_url = sync.supabase.storage.from_('user-content').get_public_url(filename)
+            banner_urls.append(public_url)
+        
+        logger.info(f"✅ Generated {len(banner_urls)} AI banners")
+        
+        return {
+            "success": True,
+            "variations": banner_urls,
+            "count": len(banner_urls)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/user/banner")
+async def update_user_banner(
+    request: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update user's banner
+    
+    Body: {
+        "banner_url": "https://..."
+    }
+    """
+    try:
+        from backend.services.supabase_sync import SupabaseSyncService
+        sync = SupabaseSyncService()
+        
+        user_id = current_user.get('sub')
+        banner_url = request.get('banner_url')
+        
+        # Update user metadata
+        sync.supabase. auth.update_user({
+            "data": {
+                "banner_url": banner_url
+            }
+        })
+        
+        logger.info(f"✅ Updated banner for user {user_id}")
+        
+        return {"success": True, "banner_url": banner_url}
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to update banner: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
