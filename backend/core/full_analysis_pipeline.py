@@ -255,8 +255,8 @@ class FullAnalysisPipeline:
                 # Video metadata
                 'title': video_info['title'],
                 'duration': video_info['duration'],
-                'uploader': video_info. get('uploader'),
-                'resolution': f"{video_info. get('width', 0)}x{video_info.get('height', 0)}",
+                'uploader': video_info.get('uploader'),
+                'resolution': f"{video_info.get('width', 0)}x{video_info.get('height', 0)}",
                 'fps': video_info.get('fps', 30),
                 'platform': video_info.get('platform', 'other'),
                 
