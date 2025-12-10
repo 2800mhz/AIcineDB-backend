@@ -45,25 +45,31 @@ class VideoProcessor:
     
     def _detect_platform(self, url: str) -> str:
         """
-        Detect the platform from URL
+        Detect the platform from URL for download strategy selection
         
         Args:
             url: Video URL
             
         Returns:
             Platform name: 'twitter', 'youtube', 'vimeo', or 'other'
+            
+        Security Note:
+            This is used only for selecting the appropriate download strategy,
+            not for URL validation or sanitization. The actual URL validation
+            and security is handled by yt-dlp during download. The substring
+            checks here are for platform identification only.
         """
         url_lower = url.lower()
         
-        # Check for Twitter/X
+        # Check for Twitter/X (uses regex pattern for proper validation)
         if self.twitter_service and self.twitter_service.is_twitter_url(url):
             return 'twitter'
         
-        # Check for YouTube
+        # Check for YouTube (substring check is safe here - only for platform identification)
         if 'youtube.com' in url_lower or 'youtu.be' in url_lower:
             return 'youtube'
         
-        # Check for Vimeo
+        # Check for Vimeo (substring check is safe here - only for platform identification)
         if 'vimeo.com' in url_lower:
             return 'vimeo'
         
