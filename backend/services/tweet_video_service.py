@@ -160,9 +160,11 @@ class TweetVideoService:
         
         logger.info(f"📱 Extracting full tweet info from: {url}")
         
+        # Note: Using quiet=True for consistency with extract_tweet_metadata
+        # Verbose mode can be enabled for debugging if needed
         ydl_opts = {
-            'quiet': False,
-            'no_warnings': False,
+            'quiet': True,
+            'no_warnings': True,
             'extract_flat': False,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',

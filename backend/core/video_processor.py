@@ -58,6 +58,13 @@ class VideoProcessor:
             not for URL validation or sanitization. The actual URL validation
             and security is handled by yt-dlp during download. The substring
             checks here are for platform identification only.
+            
+        Implementation Note:
+            Twitter uses regex validation (via TweetVideoService.is_twitter_url)
+            for precise pattern matching of status URLs. YouTube/Vimeo use
+            simple substring checks as they have more varied URL formats and
+            yt-dlp handles all variations. This mixed approach is intentional
+            for optimal balance of precision and simplicity.
         """
         url_lower = url.lower()
         

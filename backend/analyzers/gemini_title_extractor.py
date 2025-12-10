@@ -135,13 +135,21 @@ Film title:"""
         # Clean the response
         title = raw_response.strip()
         
-        # Remove common prefixes/suffixes
-        title = re.sub(r'^(Film title:|Title:|Answer:|Response:)\s*', '', title, flags=re.IGNORECASE)
+        # Remove common prefixes/suffixes (English and Turkish)
+        # English: "Film title:", "Title:", "Answer:", "Response:"
+        # Turkish: "Film adı:", "Film başlığı:", "Başlık:", "Cevap:"
+        title = re.sub(
+            r'^(Film title:|Film adı:|Film başlığı:|Title:|Başlık:|Answer:|Response:|Cevap:)\s*',
+            '',
+            title,
+            flags=re.IGNORECASE
+        )
         title = re.sub(r'[.!?]+$', '', title)
         title = title.strip(' "\'')
         
-        # Check if it's "Unknown" or similar
-        if title.lower() in ['unknown', 'none', 'n/a', 'not found', 'no title']:
+        # Check if it's "Unknown" or similar (English and Turkish)
+        unknown_patterns = ['unknown', 'none', 'n/a', 'not found', 'no title', 'bilinmiyor', 'yok', 'bulunamadı']
+        if title.lower() in unknown_patterns:
             return {
                 'title': 'Unknown Title',
                 'confidence': 'none',
