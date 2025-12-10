@@ -19,6 +19,14 @@ from backend.analyzers.characters.character_tracker import CharacterTracker
 from backend.analyzers.narrative.gemini_analyzer import GeminiNarrativeAnalyzer
 from backend.services.supabase_sync import SupabaseSyncService
 
+# Import Gemini title extractor for Twitter
+try:
+    from backend.analyzers.gemini_title_extractor import GeminiTitleExtractor
+    TITLE_EXTRACTOR_AVAILABLE = True
+except ImportError:
+    TITLE_EXTRACTOR_AVAILABLE = False
+    logger.warning("Gemini title extractor not available")
+
 
 class FullAnalysisPipeline:
     """Complete film analysis pipeline"""
@@ -44,6 +52,16 @@ class FullAnalysisPipeline:
         except Exception as e:
             logger.warning(f"Gemini analyzer unavailable: {e}")
             self.narrative_analyzer = None
+        
+        # Gemini title extractor for Twitter (may fail if API key not set)
+        try:
+            if TITLE_EXTRACTOR_AVAILABLE:
+                self.title_extractor = GeminiTitleExtractor()
+            else:
+                self.title_extractor = None
+        except Exception as e:
+            logger.warning(f"Gemini title extractor unavailable: {e}")
+            self.title_extractor = None
         
         # Supabase sync service (optional - disabled if not configured)
         self.supabase_sync = SupabaseSyncService()
@@ -79,6 +97,31 @@ class FullAnalysisPipeline:
             
             video_info = self.video_processor.download_video(url, video_id)
             video_path = video_info['video_path']
+            platform = video_info.get('platform', 'other')
+            
+            # Extract film title from tweet if this is a Twitter video
+            extracted_title = None
+            if platform == 'twitter' and self.title_extractor:
+                tweet_text = video_info.get('tweet_text', '')
+                if tweet_text:
+                    self._update_progress(progress_callback, 0.10, "🎬 Extracting film title from tweet...")
+                    try:
+                        title_result = self.title_extractor.extract_title(tweet_text)
+                        extracted_title = title_result.get('title')
+                        confidence = title_result.get('confidence', 'none')
+                        
+                        logger.info(f"🎬 Extracted title from tweet: '{extracted_title}' (confidence: {confidence})")
+                        
+                        # Use extracted title if confidence is not 'none'
+                        if confidence != 'none' and extracted_title != 'Unknown Title':
+                            video_info['extracted_title'] = extracted_title
+                            # Update the title to use extracted one
+                            video_info['title'] = extracted_title
+                            logger.info(f"✓ Using extracted title: {extracted_title}")
+                        else:
+                            logger.info(f"⚠️ Low confidence title extraction, using original: {video_info['title']}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Title extraction failed: {e}")
             
             self._update_progress(progress_callback, 0.15, f"✓ Downloaded: {video_info['title']}")
             
@@ -215,6 +258,11 @@ class FullAnalysisPipeline:
                 'uploader': video_info. get('uploader'),
                 'resolution': f"{video_info. get('width', 0)}x{video_info.get('height', 0)}",
                 'fps': video_info.get('fps', 30),
+                'platform': video_info.get('platform', 'other'),
+                
+                # Twitter-specific metadata (if applicable)
+                'tweet_text': video_info.get('tweet_text'),
+                'extracted_title': video_info.get('extracted_title'),
                 
                 # Cinematography
                 'shots': shots,
