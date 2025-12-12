@@ -1,6 +1,7 @@
 """
 Video Processing Module - FIXED for 403 Errors
 Downloads, extracts frames and audio from videos
+Supports YouTube, Vimeo, X/Twitter, and other platforms
 """
 import os
 import logging
@@ -17,6 +18,14 @@ except ImportError:
     YT_DLP_AVAILABLE = False
     logger.warning("yt-dlp not available")
 
+# Import Twitter service
+try:
+    from backend.services.tweet_video_service import TweetVideoService
+    TWITTER_SERVICE_AVAILABLE = True
+except ImportError:
+    TWITTER_SERVICE_AVAILABLE = False
+    logger.warning("Tweet video service not available")
+
 
 class VideoProcessor:
     """Handles video download and processing"""
@@ -30,22 +39,83 @@ class VideoProcessor:
         # Create directories
         for directory in [self.videos_dir, self.frames_dir, self.audio_dir]:
             directory.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize Twitter service if available
+        self.twitter_service = TweetVideoService() if TWITTER_SERVICE_AVAILABLE else None
+    
+    def _detect_platform(self, url: str) -> str:
+        """
+        Detect the platform from URL for download strategy selection
+        
+        Args:
+            url: Video URL
+            
+        Returns:
+            Platform name: 'twitter', 'youtube', 'vimeo', or 'other'
+            
+        Security Note:
+            This is used only for selecting the appropriate download strategy,
+            not for URL validation or sanitization. The actual URL validation
+            and security is handled by yt-dlp during download. The substring
+            checks here are for platform identification only.
+            
+        Implementation Note:
+            Twitter uses regex validation (via TweetVideoService.is_twitter_url)
+            for precise pattern matching of status URLs. YouTube/Vimeo use
+            simple substring checks as they have more varied URL formats and
+            yt-dlp handles all variations. This mixed approach is intentional
+            for optimal balance of precision and simplicity.
+        """
+        url_lower = url.lower()
+        
+        # Check for Twitter/X (uses regex pattern for proper validation)
+        if self.twitter_service and self.twitter_service.is_twitter_url(url):
+            return 'twitter'
+        
+        # Check for YouTube (substring check is safe here - only for platform identification)
+        if 'youtube.com' in url_lower or 'youtu.be' in url_lower:
+            return 'youtube'
+        
+        # Check for Vimeo (substring check is safe here - only for platform identification)
+        if 'vimeo.com' in url_lower:
+            return 'vimeo'
+        
+        return 'other'
     
     def download_video(self, url: str, video_id: str) -> Dict:
         """
         Download video from URL with enhanced error handling
         
         Args:
-            url: Video URL (YouTube, etc.)
+            url: Video URL (YouTube, Twitter, Vimeo, etc.)
             video_id: Unique identifier for the video
             
         Returns:
-            Dict with video info and file paths
+            Dict with video info and file paths, including:
+            - platform: str ('twitter', 'youtube', 'vimeo', 'other')
+            - tweet_text: str (only for Twitter)
+            - tweet_metadata: dict (only for Twitter)
         """
         if not YT_DLP_AVAILABLE:
             raise ImportError("yt-dlp is not installed")
         
-        logger.info(f"📥 Downloading video from: {url}")
+        # Detect platform
+        platform = self._detect_platform(url)
+        logger.info(f"📥 Downloading video from {platform}: {url}")
+        
+        # For Twitter, extract tweet metadata first
+        tweet_metadata = None
+        tweet_text = None
+        
+        if platform == 'twitter' and self.twitter_service:
+            try:
+                tweet_metadata = self.twitter_service.extract_tweet_metadata(url)
+                tweet_text = tweet_metadata.get('sanitized_text', '')
+                logger.info(f"📱 Extracted tweet text: {tweet_text[:100]}...")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not extract tweet metadata: {e}")
+                tweet_text = ""
+                tweet_metadata = {}
         
         output_template = str(self.videos_dir / f"{video_id}.%(ext)s")
         
@@ -99,7 +169,13 @@ class VideoProcessor:
                     'width': info.get('width', 0),
                     'height': info.get('height', 0),
                     'fps': info.get('fps', 30),
+                    'platform': platform,
                 }
+                
+                # Add Twitter-specific metadata
+                if platform == 'twitter':
+                    result['tweet_text'] = tweet_text or ''
+                    result['tweet_metadata'] = tweet_metadata or {}
                 
                 logger.info(f"✅ Downloaded: {result['title']} ({result['duration']}s)")
                 return result
@@ -108,14 +184,14 @@ class VideoProcessor:
             error_msg = str(e)
             
             if "HTTP Error 403" in error_msg or "Forbidden" in error_msg:
-                logger.error(f"❌ YouTube blocked the request (403 Forbidden)")
+                logger.error(f"❌ Video host blocked the request (403 Forbidden)")
                 logger.error(f"   This usually means:")
                 logger.error(f"   1. yt-dlp needs an update: pip install --upgrade yt-dlp")
                 logger.error(f"   2. Video has geo-restrictions or requires login")
-                logger.error(f"   3. YouTube's bot detection triggered")
+                logger.error(f"   3. Bot detection triggered")
                 
                 raise Exception(
-                    "YouTube blocked the download (403 Forbidden). "
+                    "Video download blocked (403 Forbidden). "
                     "Please update yt-dlp: pip install --upgrade yt-dlp"
                 )
             
