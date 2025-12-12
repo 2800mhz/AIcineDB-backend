@@ -35,9 +35,10 @@ class VideoProcessor:
         self.videos_dir = self.output_dir / "videos"
         self.frames_dir = self.output_dir / "frames"
         self.audio_dir = self.output_dir / "audio"
+        self.posters_dir = self.output_dir / "posters"
         
         # Create directories
-        for directory in [self.videos_dir, self.frames_dir, self.audio_dir]:
+        for directory in [self.videos_dir, self.frames_dir, self.audio_dir, self.posters_dir]:
             directory.mkdir(parents=True, exist_ok=True)
         
         # Initialize Twitter service if available
@@ -81,6 +82,48 @@ class VideoProcessor:
             return 'vimeo'
         
         return 'other'
+    
+    def _extract_twitter_thumbnail(self, video_path: str, video_id: str) -> Optional[str]:
+        """
+        Extract first frame as thumbnail for Twitter videos
+        
+        Args:
+            video_path: Path to downloaded video
+            video_id: Unique video identifier
+            
+        Returns:
+            Path to generated thumbnail, or None if extraction fails
+        """
+        try:
+            thumbnail_path = self.posters_dir / f"{video_id}_poster.jpg"
+            
+            # Use ffmpeg to extract first frame
+            import subprocess
+            cmd = [
+                'ffmpeg',
+                '-i', str(video_path),
+                '-ss', '00:00:01',  # 1 second in
+                '-vframes', '1',
+                '-q:v', '2',  # High quality
+                '-y',  # Overwrite if exists
+                str(thumbnail_path)
+            ]
+            
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            
+            if thumbnail_path.exists():
+                logger.info(f"✅ Thumbnail extracted: {thumbnail_path}")
+                return str(thumbnail_path)
+            else:
+                logger.warning(f"⚠️ Thumbnail file not created: {thumbnail_path}")
+                return None
+                
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"⚠️ Thumbnail extraction failed: {e.stderr}")
+            return None
+        except Exception as e:
+            logger.warning(f"⚠️ Unexpected error during thumbnail extraction: {e}")
+            return None
     
     def download_video(self, url: str, video_id: str) -> Dict:
         """
@@ -176,6 +219,11 @@ class VideoProcessor:
                 if platform == 'twitter':
                     result['tweet_text'] = tweet_text or ''
                     result['tweet_metadata'] = tweet_metadata or {}
+                    
+                    # Extract thumbnail for Twitter videos
+                    thumbnail_path = self._extract_twitter_thumbnail(video_path, video_id)
+                    if thumbnail_path:
+                        result['thumbnail_path'] = thumbnail_path
                 
                 logger.info(f"✅ Downloaded: {result['title']} ({result['duration']}s)")
                 return result

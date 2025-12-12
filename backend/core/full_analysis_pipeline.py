@@ -251,6 +251,7 @@ class FullAnalysisPipeline:
                 'job_id': job_id,
                 'video_id': video_id,
                 'url': url,
+                'video_url': url,  # Original URL for playback
                 
                 # Video metadata
                 'title': video_info['title'],
@@ -263,6 +264,7 @@ class FullAnalysisPipeline:
                 # Twitter-specific metadata (if applicable)
                 'tweet_text': video_info.get('tweet_text'),
                 'extracted_title': video_info.get('extracted_title'),
+                'thumbnail_path': video_info.get('thumbnail_path'),  # Local poster path
                 
                 # Cinematography
                 'shots': shots,
@@ -343,17 +345,38 @@ class FullAnalysisPipeline:
             # ============================================================
             supabase_title_id = None  # Track the Supabase title_id
             
-            if self.supabase_sync. enabled:
+            if self.supabase_sync.enabled:
                 self._update_progress(progress_callback, 0.97, "🔄 Syncing to showcase platform...")
                 
                 try:
+                    # First sync to get title_id
                     supabase_result = await self.supabase_sync.sync_film(analysis_result)
                     if supabase_result:
                         supabase_title_id = supabase_result.get('id')
                         logger.info(f"✓ Supabase title_id: {supabase_title_id}")
+                        
+                        # Upload poster if available
+                        if analysis_result.get('thumbnail_path') and supabase_title_id:
+                            self._update_progress(progress_callback, 0.98, "📤 Uploading poster...")
+                            try:
+                                poster_url = self.supabase_sync.upload_poster_image(
+                                    analysis_result['thumbnail_path'],
+                                    supabase_title_id
+                                )
+                                if poster_url:
+                                    # Update analysis_result and re-sync with poster_url
+                                    analysis_result['poster_url'] = poster_url
+                                    logger.info(f"✅ Poster uploaded: {poster_url}")
+                                    
+                                    # Re-sync to update poster_url in database
+                                    await self.supabase_sync.sync_film(analysis_result)
+                                    logger.info("✓ Updated Supabase with poster URL")
+                            except Exception as poster_error:
+                                logger.warning(f"⚠️ Poster upload failed (non-critical): {poster_error}")
+                    
                     self._update_progress(progress_callback, 0.99, "✓ Synced to showcase platform")
                 except Exception as sync_error:
-                    logger. warning(f"⚠ Supabase sync failed (non-critical): {sync_error}")
+                    logger.warning(f"⚠ Supabase sync failed (non-critical): {sync_error}")
                     self._update_progress(progress_callback, 0.99, "⚠ Showcase sync skipped")
             
             # ============================================================
