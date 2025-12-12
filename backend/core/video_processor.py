@@ -5,6 +5,7 @@ Supports YouTube, Vimeo, X/Twitter, and other platforms
 """
 import os
 import logging
+import subprocess
 from pathlib import Path
 from typing import Dict, Optional
 import cv2
@@ -98,7 +99,6 @@ class VideoProcessor:
             thumbnail_path = self.posters_dir / f"{video_id}_poster.jpg"
             
             # Use ffmpeg to extract first frame
-            import subprocess
             cmd = [
                 'ffmpeg',
                 '-i', str(video_path),
@@ -109,7 +109,7 @@ class VideoProcessor:
                 str(thumbnail_path)
             ]
             
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
             
             if thumbnail_path.exists():
                 logger.info(f"✅ Thumbnail extracted: {thumbnail_path}")
