@@ -77,6 +77,49 @@ class SupabaseSyncService:
                 return None
         return self._supabase_client
     
+    def upload_poster_image(self, image_path: str, title_id: str) -> Optional[str]:
+        """
+        Upload poster image to Supabase Storage
+        
+        Args:
+            image_path: Local path to image file
+            title_id: Title UUID
+            
+        Returns:
+            Public URL of uploaded image, or None if upload fails
+        """
+        if not self.enabled:
+            logger.debug("Supabase sync disabled, skipping poster upload")
+            return None
+        
+        if not self.supabase:
+            logger.error("❌ Supabase SDK client not available")
+            return None
+        
+        try:
+            # Read image file
+            with open(image_path, 'rb') as f:
+                image_data = f.read()
+            
+            # Upload to storage (bucket: title-frames)
+            file_name = f"posters/{title_id}_poster.jpg"
+            
+            result = self.supabase.storage.from_('title-frames').upload(
+                file_name,
+                image_data,
+                {'content-type': 'image/jpeg', 'upsert': 'true'}
+            )
+            
+            # Get public URL
+            url_data = self.supabase.storage.from_('title-frames').get_public_url(file_name)
+            
+            logger.info(f"✅ Poster uploaded: {url_data}")
+            return url_data
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to upload poster: {e}")
+            return None
+    
     def _generate_slug(self, title: str) -> str:
         """Create a URL-friendly slug from the title."""
         if not title:
@@ -359,6 +402,12 @@ class SupabaseSyncService:
         if color_palette.get('palette'):
             dominant_color = color_palette['palette'][0] if color_palette['palette'] else None
         
+        # Get poster URL - prioritize uploaded poster, fallback to thumbnail extraction
+        poster_url = film_data.get('poster_url') or self._get_thumbnail(film_data.get('url'))
+        
+        # Get video URL for playback - use original URL for all platforms
+        video_url = film_data.get('video_url') or film_data.get('url')
+        
         # Build the title record for Supabase
         title_record = {
             "title": title,
@@ -368,8 +417,8 @@ class SupabaseSyncService:
             "duration": duration_minutes,
             "logline": logline,
             "description": description,
-            "poster_url": self._get_thumbnail(film_data.get('url')),
-            "trailer_youtube_url": film_data.get('url') if 'youtube' in (film_data.get('url') or '').lower() else None,
+            "poster_url": poster_url,
+            "trailer_youtube_url": video_url,  # Used for video playback (all platforms)
             "status": "completed",
             "genres": genres,
             "moods": moods,
