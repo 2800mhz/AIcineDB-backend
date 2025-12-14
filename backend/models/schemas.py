@@ -308,3 +308,209 @@ class AnalysisResult(BaseModel):
     
     # Scenes
     scenes: List[Dict[str, Any]]
+
+
+# ============================================================================
+# FESTIVAL MODELS
+# ============================================================================
+
+class FestivalStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+class SubmissionStatus(str, Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    WITHDRAWN = "withdrawn"
+
+
+class FestivalBase(BaseModel):
+    """Base model for festival"""
+    name: str = Field(..., min_length=1, max_length=255)
+    slug: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    tagline: Optional[str] = Field(None, max_length=255)
+    start_date: datetime
+    end_date: datetime
+    location: Optional[str] = None
+    venue: Optional[str] = None
+    categories: List[str] = []
+    genres: List[str] = []
+    rules: Optional[str] = None
+    submission_start_date: Optional[datetime] = None
+    submission_end_date: Optional[datetime] = None
+    entry_fee: Optional[float] = Field(None, ge=0)
+    website: Optional[str] = None
+    contact_email: Optional[str] = None
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "name": "AI Cinema International Festival 2024",
+                "slug": "ai-cinema-2024",
+                "description": "Annual festival celebrating AI-generated films",
+                "tagline": "The Future of Cinema",
+                "start_date": "2024-06-01T00:00:00Z",
+                "end_date": "2024-06-07T00:00:00Z",
+                "location": "Istanbul, Turkey",
+                "venue": "Digital Arts Center",
+                "categories": ["short", "feature", "experimental"],
+                "genres": ["sci-fi", "drama", "documentary"],
+                "submission_end_date": "2024-05-01T00:00:00Z"
+            }
+        }
+
+
+class FestivalCreate(FestivalBase):
+    """Model for creating a festival"""
+    pass
+
+
+class FestivalUpdate(BaseModel):
+    """Model for updating a festival (partial update)"""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    slug: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    tagline: Optional[str] = Field(None, max_length=255)
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    location: Optional[str] = None
+    venue: Optional[str] = None
+    categories: Optional[List[str]] = None
+    genres: Optional[List[str]] = None
+    rules: Optional[str] = None
+    submission_start_date: Optional[datetime] = None
+    submission_end_date: Optional[datetime] = None
+    entry_fee: Optional[float] = Field(None, ge=0)
+    website: Optional[str] = None
+    contact_email: Optional[str] = None
+
+
+class FestivalResponse(FestivalBase):
+    """Model for festival response"""
+    id: str
+    created_by: str
+    status: FestivalStatus
+    is_creator_festival: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    
+    # Stats
+    total_submissions: int = 0
+    total_followers: int = 0
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "id": "550e8400-e29b-41d4-a716-446655440000",
+                "name": "AI Cinema International Festival 2024",
+                "slug": "ai-cinema-2024",
+                "status": "approved",
+                "is_creator_festival": False,
+                "created_by": "admin@example.com",
+                "created_at": "2024-01-20T10:00:00Z",
+                "total_submissions": 42,
+                "total_followers": 128
+            }
+        }
+
+
+class FestivalApplicationCreate(BaseModel):
+    """Model for creator festival application"""
+    festival_data: FestivalCreate
+    motivation: Optional[str] = Field(None, description="Why you want to create this festival")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "festival_data": {
+                    "name": "Turkish AI Film Festival",
+                    "slug": "turkish-ai-festival",
+                    "description": "Celebrating Turkish AI filmmakers"
+                },
+                "motivation": "I want to promote Turkish AI cinema"
+            }
+        }
+
+
+class FestivalApplicationResponse(BaseModel):
+    """Model for festival application response"""
+    id: str
+    user_id: str
+    festival_data: Dict[str, Any]
+    motivation: Optional[str] = None
+    status: FestivalStatus
+    festival_id: Optional[str] = None
+    admin_notes: Optional[str] = None
+    created_at: datetime
+    reviewed_at: Optional[datetime] = None
+    reviewed_by: Optional[str] = None
+
+
+class FestivalSubmissionCreate(BaseModel):
+    """Model for submitting a film to a festival"""
+    film_id: int
+    category: Optional[str] = None
+    notes: Optional[str] = None
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "film_id": 123,
+                "category": "short",
+                "notes": "This is my debut AI-generated film"
+            }
+        }
+
+
+class FestivalSubmissionResponse(BaseModel):
+    """Model for festival submission response"""
+    id: str
+    festival_id: str
+    film_id: int
+    user_id: str
+    category: Optional[str] = None
+    notes: Optional[str] = None
+    status: SubmissionStatus
+    submitted_at: datetime
+    reviewed_at: Optional[datetime] = None
+    reviewed_by: Optional[str] = None
+    feedback: Optional[str] = None
+
+
+class FestivalOrganizerCreate(BaseModel):
+    """Model for adding a festival organizer"""
+    user_id: str
+    role: str = Field(default="organizer", description="Role of the organizer")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "user_id": "550e8400-e29b-41d4-a716-446655440000",
+                "role": "organizer"
+            }
+        }
+
+
+class FestivalEventCreate(BaseModel):
+    """Model for creating a festival event"""
+    title: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    event_date: datetime
+    location: Optional[str] = None
+    event_type: str = Field(default="screening", description="Type of event")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "title": "Opening Ceremony",
+                "description": "Festival opening with keynote speech",
+                "event_date": "2024-06-01T19:00:00Z",
+                "location": "Main Hall",
+                "event_type": "ceremony"
+            }
+        }

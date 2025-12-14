@@ -109,3 +109,56 @@ async def get_current_user(
     except Exception as e:
         logger.error(f"Failed to get current user: {e}")
         return None
+
+
+async def verify_creator(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> dict:
+    """Verify user is a creator (FastAPI dependency)"""
+    try:
+        from backend.services.supabase_sync import get_supabase_client
+        supabase = get_supabase_client()
+        
+        # Get user from JWT token
+        user_response = supabase.auth.get_user(credentials.credentials)
+        
+        if not user_response or not user_response.user:
+            raise HTTPException(status_code=401, detail="Invalid authentication token")
+        
+        user = user_response.user
+        user_email = user.email
+        user_role = user.user_metadata.get('role', '')
+        
+        # Check creator status (creator or admin)
+        is_creator = user_role in ['creator', 'admin'] or is_admin_email(user_email)
+        
+        if not is_creator:
+            logger.warning(f"⚠️ Non-creator user attempted creator action: {user_email}")
+            raise HTTPException(
+                status_code=403, 
+                detail="Creator access required. Please upgrade your account."
+            )
+        
+        logger.info(f"✅ Creator verified: {user_email}")
+        
+        return {
+            "id": user.id,
+            "email": user_email,
+            "role": user_role,
+            "is_admin": is_admin_email(user_email),
+            "is_creator": True
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Creator verification failed: {e}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
+
+
+async def verify_creator_or_admin(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> dict:
+    """Verify user is either a creator or admin (FastAPI dependency)"""
+    # Same as verify_creator for now
+    return await verify_creator(credentials)

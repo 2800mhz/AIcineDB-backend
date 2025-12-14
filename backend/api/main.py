@@ -25,6 +25,7 @@ from backend.models.schemas import (
     SearchFilters,
     HealthCheck
 )
+from backend.api.festivals import router as festivals_router
 
 # Configure logging
 logging.basicConfig(
@@ -51,6 +52,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include routers
+app.include_router(festivals_router, prefix="/api", tags=["festivals"])
 
 
 # ============================================================================
