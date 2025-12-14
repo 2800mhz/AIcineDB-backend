@@ -7,7 +7,7 @@ from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import logging
 
-logger = logging. getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 security = HTTPBearer()
 
@@ -65,7 +65,7 @@ async def verify_admin(
             logger.warning(f"⚠️ Non-admin user attempted admin action: {user_email}")
             raise HTTPException(
                 status_code=403, 
-                detail="Admin access required.  Contact system administrator."
+                detail="Admin access required. Contact system administrator."
             )
         
         logger.info(f"✅ Admin verified: {user_email}")
@@ -102,7 +102,7 @@ async def get_current_user(
         return {
             "id": user.id,
             "email": user.email,
-            "role": user.user_metadata. get('role', ''),
+            "role": user.user_metadata.get('role', ''),
             "is_admin": is_admin_email(user.email)
         }
         

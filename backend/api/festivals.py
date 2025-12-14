@@ -823,7 +823,29 @@ async def update_event(
 ):
     """Update festival event"""
     try:
-        # TODO: Add permission check for event's festival
+        # Get event to find its festival
+        event_query = festival_service.supabase.table("festival_events")\
+            .select("festival_id")\
+            .eq("id", event_id)\
+            .execute()
+        
+        if not event_query.data:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        festival_id = event_query.data[0]["festival_id"]
+        
+        # Check permissions
+        has_permission = await festival_service.check_festival_permission(
+            festival_id=festival_id,
+            user_id=current_user["id"],
+            is_admin=current_user.get("is_admin", False)
+        )
+        
+        if not has_permission:
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have permission to update this event"
+            )
         
         result = await festival_service.update_event(
             event_id=event_id,
@@ -851,13 +873,37 @@ async def delete_event(
 ):
     """Delete festival event"""
     try:
-        # TODO: Add permission check for event's festival
+        # Get event to find its festival
+        event_query = festival_service.supabase.table("festival_events")\
+            .select("festival_id")\
+            .eq("id", event_id)\
+            .execute()
+        
+        if not event_query.data:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        festival_id = event_query.data[0]["festival_id"]
+        
+        # Check permissions
+        has_permission = await festival_service.check_festival_permission(
+            festival_id=festival_id,
+            user_id=current_user["id"],
+            is_admin=current_user.get("is_admin", False)
+        )
+        
+        if not has_permission:
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have permission to delete this event"
+            )
         
         await festival_service.delete_event(event_id)
         
         logger.info(f"✅ Event deleted: {event_id}")
         return {"message": "Event deleted successfully"}
     
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Failed to delete event: {e}")
         raise HTTPException(status_code=500, detail=str(e))

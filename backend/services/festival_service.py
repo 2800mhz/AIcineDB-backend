@@ -552,8 +552,20 @@ class FestivalService:
         return False
 
 
+# Cached Supabase client
+_supabase_client_cache = None
+
+
 def get_supabase_client():
-    """Get Supabase client instance"""
-    from backend.services.supabase_sync import SupabaseSyncService
-    sync_service = SupabaseSyncService()
-    return sync_service.supabase
+    """
+    Get Supabase client instance (cached for performance)
+    Uses singleton pattern from SupabaseSyncService
+    """
+    global _supabase_client_cache
+    
+    if _supabase_client_cache is None:
+        from backend.services.supabase_sync import SupabaseSyncService
+        sync_service = SupabaseSyncService()
+        _supabase_client_cache = sync_service.supabase
+    
+    return _supabase_client_cache
