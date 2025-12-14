@@ -159,6 +159,8 @@ async def verify_creator(
 async def verify_creator_or_admin(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> dict:
-    """Verify user is either a creator or admin (FastAPI dependency)"""
-    # Same as verify_creator for now
+    """
+    Verify user is either a creator or admin (FastAPI dependency)
+    Alias for verify_creator() - kept for semantic clarity in endpoints
+    """
     return await verify_creator(credentials)
