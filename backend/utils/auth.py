@@ -111,6 +111,36 @@ async def get_current_user(
         return None
 
 
+async def get_current_user_optional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False))
+) -> Optional[dict]:
+    """Get current user without requiring authentication"""
+    if not credentials:
+        return None
+    
+    try:
+        from backend.services.supabase_sync import get_supabase_client
+        supabase = get_supabase_client()
+        
+        user_response = supabase.auth.get_user(credentials.credentials)
+        
+        if not user_response or not user_response.user:
+            return None
+        
+        user = user_response.user
+        
+        return {
+            "id": user.id,
+            "email": user.email,
+            "role": user.user_metadata.get('role', ''),
+            "is_admin": is_admin_email(user.email)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get current user: {e}")
+        return None
+
+
 async def verify_creator(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> dict:

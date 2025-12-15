@@ -150,7 +150,7 @@ When creating a festival, the following date validations are enforced:
 
 2. **Submission dates (if provided):**
    - `submission_end_date` must be after `submission_start_date`
-   - `submission_end_date` must be before or equal to `start_date`
+   - `submission_end_date` must be BEFORE `start_date` (submissions must close before the festival begins)
 
 **Example of valid dates:**
 ```json
@@ -160,9 +160,11 @@ When creating a festival, the following date validations are enforced:
   "start_date": "2024-06-01T00:00:00Z",
   "end_date": "2024-06-07T00:00:00Z",
   "submission_start_date": "2024-03-01T00:00:00Z",
-  "submission_end_date": "2024-05-31T00:00:00Z"
+  "submission_end_date": "2024-05-31T23:59:59Z"
 }
 ```
+
+Note: The submission deadline (May 31, 23:59:59) is before the festival start (June 1, 00:00:00).
 
 **Error Response (invalid dates):**
 ```json

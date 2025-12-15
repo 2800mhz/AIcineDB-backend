@@ -17,7 +17,7 @@ from backend.models.schemas import (
     FestivalOrganizerCreate,
     FestivalEventCreate,
 )
-from backend.utils.auth import verify_admin, verify_creator, get_current_user
+from backend.utils.auth import verify_admin, verify_creator, get_current_user, get_current_user_optional
 from backend.services.festival_service import FestivalService, get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -731,7 +731,7 @@ async def unfollow_festival(
 @router.get("/festivals/{festival_id}/following")
 async def check_following(
     festival_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_current_user_optional),
     festival_service: FestivalService = Depends(get_festival_service)
 ):
     """Check if current user is following this festival"""
