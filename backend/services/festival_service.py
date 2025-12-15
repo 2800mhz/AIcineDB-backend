@@ -50,8 +50,9 @@ class FestivalService:
             submission_end_date = datetime.fromisoformat(submission_end_date.replace('Z', '+00:00'))
         
         # Validate end_date > start_date
-        if end_date and start_date and end_date < start_date:
-            raise ValueError("End date must be after start date")
+        if start_date and end_date:
+            if end_date <= start_date:
+                raise ValueError("End date must be after start date")
         
         # Validate submission dates if provided
         if submission_start_date and submission_end_date:

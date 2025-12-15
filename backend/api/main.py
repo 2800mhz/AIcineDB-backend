@@ -13,6 +13,7 @@ import logging
 from fastapi. security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends
 import json
+import os
 
 from backend.database.connection import get_db, init_db
 from backend.tasks.video_tasks import analyze_film_complete
@@ -45,16 +46,24 @@ app = FastAPI(
 )
 
 # CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+# Get allowed origins from environment or use defaults
+allowed_origins_env = os.getenv('CORS_ORIGINS', '')
+if allowed_origins_env:
+    # Production: use environment variable
+    allowed_origins = [origin.strip() for origin in allowed_origins_env.split(',')]
+else:
+    # Development: use default origins
+    allowed_origins = [
         "http://localhost:5173",
         "http://localhost:8080",
         "http://localhost:3000",
         "https://aicinedb.com",
         "https://www.aicinedb.com",
-        "*"  # Allow all during development - restrict in production
-    ],
+    ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
