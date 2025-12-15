@@ -56,11 +56,11 @@ class FestivalService:
         
         # Validate submission dates if provided
         if submission_start_date and submission_end_date:
-            if submission_end_date < submission_start_date:
+            if submission_end_date <= submission_start_date:
                 raise ValueError("Submission end date must be after submission start date")
             
-            # Ensure submissions close before festival starts
-            if submission_end_date > start_date:
+            # Ensure submissions close before festival starts (strictly before)
+            if submission_end_date >= start_date:
                 raise ValueError("Submission deadline must be before festival start date")
         
         data = {

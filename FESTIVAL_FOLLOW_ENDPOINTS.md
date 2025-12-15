@@ -270,7 +270,7 @@ CONSTRAINT festivals_submission_before_start_check
   CHECK (
     submission_end_date IS NULL OR 
     start_date IS NULL OR 
-    submission_end_date <= start_date
+    submission_end_date < start_date
   )
 ```
 
