@@ -84,10 +84,8 @@ async def verify_admin(
         raise HTTPException(status_code=401, detail="Authentication failed")
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-) -> Optional[dict]:
-    """Get current user (optional admin check)"""
+async def _get_user_from_token(credentials: HTTPAuthorizationCredentials) -> Optional[dict]:
+    """Internal helper to get user from JWT token"""
     try:
         from backend.services.supabase_sync import get_supabase_client
         supabase = get_supabase_client()
@@ -107,8 +105,15 @@ async def get_current_user(
         }
         
     except Exception as e:
-        logger.error(f"Failed to get current user: {e}")
+        logger.error(f"Failed to get user from token: {e}")
         return None
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> Optional[dict]:
+    """Get current user (requires authentication)"""
+    return await _get_user_from_token(credentials)
 
 
 async def get_current_user_optional(
@@ -118,27 +123,7 @@ async def get_current_user_optional(
     if not credentials:
         return None
     
-    try:
-        from backend.services.supabase_sync import get_supabase_client
-        supabase = get_supabase_client()
-        
-        user_response = supabase.auth.get_user(credentials.credentials)
-        
-        if not user_response or not user_response.user:
-            return None
-        
-        user = user_response.user
-        
-        return {
-            "id": user.id,
-            "email": user.email,
-            "role": user.user_metadata.get('role', ''),
-            "is_admin": is_admin_email(user.email)
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to get current user: {e}")
-        return None
+    return await _get_user_from_token(credentials)
 
 
 async def verify_creator(
