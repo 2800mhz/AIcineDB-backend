@@ -41,7 +41,20 @@ CREATE TABLE IF NOT EXISTS festivals (
     
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP
+    updated_at TIMESTAMP,
+    
+    -- Date constraints
+    CONSTRAINT festivals_date_check CHECK (end_date > start_date),
+    CONSTRAINT festivals_submission_date_check CHECK (
+        submission_start_date IS NULL OR 
+        submission_end_date IS NULL OR 
+        submission_end_date > submission_start_date
+    ),
+    CONSTRAINT festivals_submission_before_start_check CHECK (
+        submission_end_date IS NULL OR 
+        start_date IS NULL OR 
+        submission_end_date <= start_date
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_festivals_status ON festivals(status);

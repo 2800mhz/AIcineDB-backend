@@ -33,6 +33,35 @@ class FestivalService:
         """
         festival_id = str(uuid.uuid4())
         
+        # Validate dates
+        start_date = festival_data.get("start_date")
+        end_date = festival_data.get("end_date")
+        submission_start_date = festival_data.get("submission_start_date")
+        submission_end_date = festival_data.get("submission_end_date")
+        
+        # Convert string dates to datetime if needed
+        if isinstance(start_date, str):
+            start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        if isinstance(end_date, str):
+            end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+        if isinstance(submission_start_date, str):
+            submission_start_date = datetime.fromisoformat(submission_start_date.replace('Z', '+00:00'))
+        if isinstance(submission_end_date, str):
+            submission_end_date = datetime.fromisoformat(submission_end_date.replace('Z', '+00:00'))
+        
+        # Validate end_date > start_date
+        if end_date and start_date and end_date < start_date:
+            raise ValueError("End date must be after start date")
+        
+        # Validate submission dates if provided
+        if submission_start_date and submission_end_date:
+            if submission_end_date < submission_start_date:
+                raise ValueError("Submission end date must be after submission start date")
+            
+            # Ensure submissions close before festival starts
+            if submission_end_date > start_date:
+                raise ValueError("Submission deadline must be before festival start date")
+        
         data = {
             "id": festival_id,
             "created_by": user_id,
@@ -437,6 +466,16 @@ class FestivalService:
         
         logger.info(f"✅ User {user_id} unfollowed festival {festival_id}")
         return True
+    
+    async def check_following(self, festival_id: str, user_id: str) -> bool:
+        """Check if user is following festival"""
+        response = self.supabase.table("festival_followers")\
+            .select("*")\
+            .eq("festival_id", festival_id)\
+            .eq("user_id", user_id)\
+            .execute()
+        
+        return len(response.data) > 0 if response.data else False
     
     async def list_followers(
         self,

@@ -74,6 +74,10 @@ async def create_festival(
                 "note": "Your festival will be visible once approved by an administrator"
             }
     
+    except ValueError as e:
+        # Date validation errors
+        logger.error(f"❌ Date validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"❌ Failed to create festival: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -721,6 +725,30 @@ async def unfollow_festival(
     
     except Exception as e:
         logger.error(f"❌ Failed to unfollow festival: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/festivals/{festival_id}/following")
+async def check_following(
+    festival_id: str,
+    current_user: dict = Depends(get_current_user),
+    festival_service: FestivalService = Depends(get_festival_service)
+):
+    """Check if current user is following this festival"""
+    try:
+        # If not authenticated, return false
+        if not current_user:
+            return {"is_following": False}
+        
+        result = await festival_service.check_following(
+            festival_id=festival_id,
+            user_id=current_user["id"]
+        )
+        
+        return {"is_following": result}
+    
+    except Exception as e:
+        logger.error(f"❌ Failed to check following status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
