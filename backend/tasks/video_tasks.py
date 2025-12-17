@@ -267,11 +267,13 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
                     
                     # Update the existing title with analysis results
                     try:
+                        from datetime import datetime
+                        
                         update_data = {
                             'status': 'completed',
-                            'duration': int(analysis_result.get('duration', 0) / 60),  # Convert to minutes
+                            'duration': int((analysis_result.get('duration') or 0) / 60),  # Convert to minutes, protect against None
                             'description': analysis_result.get('description', ''),
-                            'year': analysis_result.get('year') or 2024,
+                            'year': analysis_result.get('year') or datetime.now().year,  # Use current year as fallback
                         }
                         
                         # Add optional fields if available

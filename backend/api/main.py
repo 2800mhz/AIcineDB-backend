@@ -10,7 +10,7 @@ from pydantic import BaseModel, HttpUrl, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import logging
-from fastapi. security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends
 import json
 
@@ -567,20 +567,6 @@ def generate_slug(title: str) -> str:
         slug = "untitled"
     
     return slug
-
-
-async def get_current_user_id(current_user: dict = Depends(get_current_user)) -> str:
-    """Extract user ID from current user"""
-    if not current_user or not current_user.get('id'):
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return current_user['id']
-
-
-async def get_user_role(current_user: dict = Depends(get_current_user)) -> str:
-    """Extract user role from current user"""
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return current_user.get('role', 'user')
 
 
 @app.post("/api/upload", response_model=AnalysisJobResponse)
