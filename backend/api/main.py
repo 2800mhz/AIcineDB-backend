@@ -47,7 +47,14 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure for production
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "https://aicinedb.com",
+        "https://www.aicinedb.com",
+        "https://*.railway.app",  # Railway deployments
+        "*"  # Allow all origins for development (remove for production)
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
