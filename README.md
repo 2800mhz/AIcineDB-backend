@@ -233,6 +233,27 @@ black backend/
 flake8 backend/
 ```
 
+## ☁️ Deployment
+
+### Railway Deployment
+
+Deploy to Railway with one click:
+
+```bash
+# Railway will automatically use these files:
+# - Procfile (start command)
+# - railway.json (build config)
+# - nixpacks.toml (Python environment)
+# - runtime.txt (Python version)
+```
+
+**Quick Deploy Steps:**
+1. Connect your GitHub repo to Railway
+2. Add environment variables (see [RAILWAY_ENV_VARS.md](RAILWAY_ENV_VARS.md))
+3. Deploy automatically on push
+
+For detailed instructions, see [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## 🐳 Docker
 
 ### Hybrid Mode (Recommended for Windows)
@@ -284,7 +305,8 @@ See [LICENSE](LICENSE) file for details.
 
 ## 🔗 Links
 
-- **Documentation:** [SETUP_WINDOWS.md](SETUP_WINDOWS.md) | [API_DOCUMENTATION.md](API_DOCUMENTATION.md)
+- **Documentation:** [SETUP_WINDOWS.md](SETUP_WINDOWS.md) | [API_DOCUMENTATION.md](API_DOCUMENTATION.md) | [DEPLOYMENT.md](DEPLOYMENT.md)
+- **Deployment:** [Railway Guide](DEPLOYMENT.md) | [Environment Variables](RAILWAY_ENV_VARS.md)
 - **Issues:** [GitHub Issues](https://github.com/2800mhz/AIcineDB-backend/issues)
 - **API Reference:** http://localhost:8000/docs (when running)
 
