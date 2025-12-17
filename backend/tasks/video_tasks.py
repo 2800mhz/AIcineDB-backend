@@ -26,15 +26,20 @@ class CallbackTask(Task):
 # --- Main Analysis Task ---
 
 @app.task(base=CallbackTask, bind=True, name="backend.tasks.video_tasks.analyze_film_complete")
-def analyze_film_complete(self, job_id: int, url: str):
+def analyze_film_complete(self, job_id: int, url: str, title_id: str = None):
     """
     Complete film analysis with all modules including Cast & Crew
+    
+    Args:
+        job_id: Analysis job ID
+        url: Video URL to analyze
+        title_id: Optional Supabase title UUID (if pre-created by upload endpoint)
     """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     try:
-        result = loop.run_until_complete(_run_analysis(self, job_id, url))
+        result = loop.run_until_complete(_run_analysis(self, job_id, url, title_id))
         return result
     except Exception as e:
         logger.error(f"❌ Analysis failed: {e}", exc_info=True)
@@ -123,9 +128,15 @@ async def _cleanup_old_frames(sync, supabase_id: str):
         logger.warning(f"⚠️ Cleanup warning (non-fatal): {e}")
 
 
-async def _run_analysis(task_self, job_id: int, url: str):
+async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
     """
     Internal async function that runs the actual analysis pipeline.
+    
+    Args:
+        task_self: Celery task instance
+        job_id: Analysis job ID
+        url: Video URL to analyze
+        title_id: Optional Supabase title UUID (if pre-created by upload endpoint)
     """
     from backend.core.full_analysis_pipeline import FullAnalysisPipeline
     from backend.database.connection import get_task_db
@@ -249,6 +260,46 @@ async def _run_analysis(task_self, job_id: int, url: str):
             if sync.enabled:
                 logger.info(f"🔄 Supabase sync enabled - Starting sync...")
                 
+                # If title_id was provided (from upload endpoint), use it directly
+                if title_id:
+                    logger.info(f"📝 Using pre-created title ID: {title_id}")
+                    supabase_id = title_id
+                    
+                    # Update the existing title with analysis results
+                    try:
+                        from datetime import datetime
+                        
+                        update_data = {
+                            'status': 'completed',
+                            'duration': int((analysis_result.get('duration') or 0) / 60),  # Convert to minutes, protect against None
+                            'description': analysis_result.get('description', ''),
+                            'year': analysis_result.get('year') or datetime.now().year,  # Use current year as fallback
+                        }
+                        
+                        # Add optional fields if available
+                        if analysis_result.get('narrative', {}).get('themes'):
+                            themes = analysis_result['narrative']['themes']
+                            if isinstance(themes, list):
+                                theme_names = [t.get('name', t) if isinstance(t, dict) else str(t) for t in themes[:5]]
+                                update_data['tags'] = theme_names
+                        
+                        if analysis_result.get('narrative', {}).get('genre'):
+                            update_data['genres'] = analysis_result['narrative']['genre']
+                        
+                        if analysis_result.get('style_fingerprint'):
+                            update_data['style_fingerprint'] = analysis_result['style_fingerprint']
+                        
+                        # Update title in Supabase
+                        sync.supabase.table('titles').update(update_data).eq('id', title_id).execute()
+                        logger.info(f"✅ Updated existing title {title_id} with analysis results")
+                        
+                    except Exception as update_err:
+                        logger.warning(f"⚠️ Failed to update title {title_id}: {update_err}")
+                        # Continue anyway - the title exists
+                else:
+                    # No pre-created title - use existing sync logic
+                    logger.info(f"📝 No pre-created title - creating new one via sync")
+                    
                 film_data = {
                     'job_id': str(job_id),
                     'title': analysis_result.get('title', 'Unknown'),
@@ -270,11 +321,21 @@ async def _run_analysis(task_self, job_id: int, url: str):
                     'crew': analysis_result.get('crew', []),
                 }
                 
-                result = await sync.sync_film(film_data)
+                # Only sync/create title if title_id was NOT provided
+                if not title_id:
+                    result = await sync.sync_film(film_data)
+                    
+                    if result and result.get('id'):
+                        supabase_id = result['id']
+                        logger.info(f"✅ Synced to Supabase - Title ID: {supabase_id}")
+                    else:
+                        logger.warning("⚠️ Supabase sync returned no title_id - keyframes will not be uploaded")
+                        supabase_id = None
+                else:
+                    logger.info(f"✅ Using pre-created title ID: {supabase_id}")
                 
-                if result and result.get('id'):
-                    supabase_id = result['id']
-                    logger.info(f"✅ Synced to Supabase - Title ID: {supabase_id}")
+                # Upload frames if we have a supabase_id
+                if supabase_id:
                     
                     # ✅ CLEANUP OLD FRAMES BEFORE UPLOADING NEW ONES
                     update_progress(0.93, "🧹 Cleaning up old frames...")
@@ -338,7 +399,7 @@ async def _run_analysis(task_self, job_id: int, url: str):
                                     except Exception as upload_err:
                                         logger.warning(f"⚠️ Alt path upload failed: {upload_err}")
                 else:
-                    logger.warning("⚠️ Supabase sync returned no title_id - keyframes will not be uploaded")
+                    logger.warning("⚠️ No Supabase ID available - keyframes will not be uploaded")
             else:
                 logger.info("ℹ️ Supabase sync disabled (SUPABASE_URL or SUPABASE_SERVICE_KEY not set)")
                 
