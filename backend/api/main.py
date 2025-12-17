@@ -116,6 +116,7 @@ async def root():
         ],
         "endpoints": {
             "POST /api/analyze": "Submit video for analysis",
+            "POST /api/upload": "Upload video (creators/admins only)",
             "GET /api/jobs/{job_id}": "Get analysis job status",
             "GET /api/films": "List all analyzed films",
             "GET /api/films/{film_id}": "Get detailed film analysis",
