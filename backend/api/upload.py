@@ -98,9 +98,10 @@ async def upload_video(
         supabase = get_supabase_client()
         
         if not supabase:
+            logger.error("❌ Supabase client initialization failed - check SUPABASE_URL and SUPABASE_SERVICE_KEY")
             raise HTTPException(
                 status_code=500, 
-                detail="Supabase client not available"
+                detail="Supabase client not available. Please check server configuration (SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables)."
             )
         
         # CASE 1: Frontend sent title_id (PREFERRED FLOW)
@@ -132,12 +133,17 @@ async def upload_video(
                     )
             
             # Update status to processing
-            supabase.table("titles").update({
+            update_result = supabase.table("titles").update({
                 "status": "processing",
                 "trailer_youtube_url": str(request.url)
             }).eq("id", title_id).execute()
             
-            logger.info(f"✅ Updated title {title_id} status to 'processing'")
+            # Note: Supabase update can return empty data if values are identical
+            # The title existence was verified above, so we just log for debugging
+            if update_result.data:
+                logger.info(f"✅ Updated title {title_id} status to 'processing' ({len(update_result.data)} rows)")
+            else:
+                logger.info(f"✅ Title {title_id} status confirmed (no changes needed)")
             
         # CASE 2: No title_id - Create new one (BACKWARD COMPATIBILITY)
         else:

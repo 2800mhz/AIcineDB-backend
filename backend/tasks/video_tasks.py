@@ -13,6 +13,9 @@ from backend.services.supabase_sync import SupabaseSyncService
 # Setup logging
 logger = logging.getLogger(__name__)
 
+# Constants
+MAX_ERROR_MESSAGE_LENGTH = 500  # Maximum length for error messages in database
+
 # --- Base Task ---
 
 class CallbackTask(Task):
@@ -56,7 +59,7 @@ def analyze_film_complete(self, job_id: int, url: str, title_id: str = None):
                 if sync.enabled and sync.supabase:
                     sync.supabase.table('titles').update({
                         'status': 'failed',
-                        'moderator_notes': f"Analysis failed: {str(e)[:500]}"
+                        'moderator_notes': f"Analysis failed: {str(e)[:MAX_ERROR_MESSAGE_LENGTH]}"
                     }).eq('id', title_id).execute()
                     logger.info(f"✅ Updated title {title_id} status to 'failed'")
             except Exception as title_error:
