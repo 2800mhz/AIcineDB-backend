@@ -638,6 +638,7 @@ async def upload_video(
                 
                 # Note: update_result.data can be empty if values are identical
                 # We verify the title exists above, so we don't need to check update result
+                logger.debug(f"Update result: {len(update_result.data) if update_result.data else 0} rows affected")
                 logger.info(f"✅ Updated existing title {title_id} to processing")
                 
             except HTTPException:
