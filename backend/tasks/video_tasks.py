@@ -238,14 +238,11 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
         # ============================================================
         # SAVE CAST & CREW TO RELATIONAL DB (85-90%)
         # ============================================================
-        if film_id_int:
-            update_progress(0.85, "💾 Saving cast & crew to relational DB...")
-            try:
-                await _save_cast_crew(db_ops, film_id_int, analysis_result)
-            except Exception as e:
-                logger.error(f"❌ Failed to save cast/crew to DB: {e}", exc_info=True)
-        else:
-            logger.warning("Skipping relational DB save: Film ID not available.")
+        # NOTE: Cast/crew is now saved to Supabase title_cast table only
+        # Local PostgreSQL film_cast table is no longer used
+        # This avoids "relation film_cast does not exist" errors in Supabase-only deployments
+        update_progress(0.85, "💾 Cast & crew will be synced to Supabase...")
+        logger.info("ℹ️ Skipping local DB save - cast/crew will be saved to Supabase title_cast table")
             
         update_progress(0.90, "☁️ Syncing to cloud...")
 
@@ -270,11 +267,15 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
                         from datetime import datetime
                         
                         update_data = {
+                            'title': analysis_result.get('title', 'Unknown'),  # Update with extracted title
                             'status': 'completed',
                             'duration': int((analysis_result.get('duration') or 0) / 60),  # Convert to minutes, protect against None
                             'description': analysis_result.get('description', ''),
                             'year': analysis_result.get('year') or datetime.now().year,  # Use current year as fallback
                         }
+                        
+                        # NOTE: uploaded_by is NOT included in update_data, so it will be preserved
+                        # Supabase update() only modifies the fields specified in the data dict
                         
                         # Add optional fields if available
                         if analysis_result.get('narrative', {}).get('themes'):
@@ -292,6 +293,14 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
                         # Update title in Supabase
                         sync.supabase.table('titles').update(update_data).eq('id', title_id).execute()
                         logger.info(f"✅ Updated existing title {title_id} with analysis results")
+                        
+                        # Sync cast & crew to title_cast table
+                        film_data_for_cast = {
+                            'cast': analysis_result.get('cast', []),
+                            'crew': analysis_result.get('crew', []),
+                        }
+                        await sync._sync_cast_crew(title_id, film_data_for_cast)
+                        logger.info(f"✅ Synced cast/crew for title {title_id}")
                         
                     except Exception as update_err:
                         logger.warning(f"⚠️ Failed to update title {title_id}: {update_err}")
@@ -447,7 +456,15 @@ async def _extract_cast_crew(analysis_result: dict, url: str) -> dict:
 
 
 async def _save_cast_crew(db_ops, film_id: int, analysis_result: dict):
-    """Save cast & crew to relational database."""
+    """
+    Save cast & crew to relational database (LOCAL PostgreSQL).
+    
+    NOTE: This function is DEPRECATED and no longer called.
+    Cast/crew is now saved directly to Supabase title_cast table via _sync_cast_crew()
+    in supabase_sync.py. This avoids "relation film_cast does not exist" errors.
+    
+    Keeping this function for backward compatibility with local-only deployments.
+    """
     cast = analysis_result.get('cast', [])
     crew = analysis_result.get('crew', [])
     
