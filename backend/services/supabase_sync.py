@@ -550,8 +550,11 @@ class SupabaseSyncService:
             # Map the analysis data to Supabase schema
             title_record = self._map_analysis_to_title(film_data)
             
-            # IMPORTANT: When updating an existing title (title_id provided),
-            # don't overwrite uploaded_by - it was set by the frontend when creating the title
+            # IMPORTANT: Preserve uploaded_by when updating existing titles
+            # When title_id is provided (UPDATE case), the title was already created by the frontend
+            # with the correct uploaded_by (creator's UUID). We should NOT overwrite it with
+            # backend-derived values to maintain proper creator attribution.
+            # Only set uploaded_by when creating NEW titles (no title_id).
             if title_id and "uploaded_by" in title_record:
                 logger.info(f"ℹ️ Removing uploaded_by from update to preserve frontend value")
                 title_record.pop("uploaded_by")

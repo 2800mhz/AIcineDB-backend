@@ -46,13 +46,13 @@ When a creator uploaded a video, **two separate title records** were being creat
 
 ## Migration
 
-If you have an existing database, run the migration:
+If you have an existing database, run the migration script (already has execute permissions):
 
 ```bash
 ./scripts/apply_migration_003.sh
 ```
 
-Or manually apply:
+Or manually apply with psql:
 
 ```bash
 psql -U aicine_user -d aicine -f backend/database/migrations/003_add_user_id_to_analysis_jobs.sql
@@ -62,6 +62,11 @@ Or if using Docker:
 
 ```bash
 docker exec -i aicine_postgres psql -U aicine_user -d aicine < backend/database/migrations/003_add_user_id_to_analysis_jobs.sql
+```
+
+**Note:** The migration script is already marked as executable. If you encounter permission issues, run:
+```bash
+chmod +x scripts/apply_migration_003.sh
 ```
 
 ## Expected Result

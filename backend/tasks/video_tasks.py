@@ -165,14 +165,21 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
     async with get_task_db() as db:
         db_ops = DatabaseOperations(db)
         
-        # Fetch job data to get user_id
-        job_data = await db_ops.get_job(job_id)
-        user_id = job_data.get('user_id') if job_data else None
-        
-        if user_id:
-            logger.info(f"👤 User ID from job: {user_id}")
-        else:
-            logger.warning("⚠️ No user_id found in job data - uploaded_by will not be set")
+        # Fetch job data to get user_id for creator attribution
+        try:
+            job_data = await db_ops.get_job(job_id)
+            if not job_data:
+                logger.error(f"❌ Job {job_id} not found in database")
+                raise ValueError(f"Job {job_id} not found")
+            
+            user_id = job_data.get('user_id')
+            if user_id:
+                logger.info(f"👤 User ID from job: {user_id}")
+            else:
+                logger.warning("⚠️ No user_id found in job data - uploaded_by will not be set")
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch job data: {e}")
+            raise
         
         await db_ops.update_job_status(
             job_id,
