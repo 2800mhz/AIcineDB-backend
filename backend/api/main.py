@@ -580,6 +580,7 @@ def generate_slug(title: str) -> str:
 async def upload_video(
     video_url: str = Form(...),
     video_title: Optional[str] = Form(None),
+    title_id: Optional[str] = Form(None),
     priority: int = Form(5),
     current_user: dict = Depends(verify_creator_or_admin)
 ):
@@ -587,7 +588,8 @@ async def upload_video(
     Video upload and analysis endpoint
     
     Only creators and admins can upload videos.
-    Creates a title in Supabase and starts analysis job.
+    If title_id is provided, updates that existing title (preferred).
+    Otherwise creates a new title (backward compatibility).
     """
     try:
         user_id = current_user['id']
@@ -602,29 +604,67 @@ async def upload_video(
         if not supabase:
             raise HTTPException(status_code=500, detail="Supabase client not available")
         
-        # Create title data
-        title_text = video_title or "Untitled"
-        slug = generate_slug(title_text)
+        # Case 1: Frontend sent title_id (PREFERRED)
+        if title_id:
+            logger.info(f"✅ Using existing title_id from frontend: {title_id}")
+            
+            # Verify title exists and belongs to user
+            try:
+                existing = supabase.table("titles") \
+                    .select("id, uploaded_by, status") \
+                    .eq("id", title_id) \
+                    .single() \
+                    .execute()
+                
+                if not existing.data:
+                    raise HTTPException(status_code=404, detail="Title not found")
+                
+                # Verify ownership (unless admin)
+                if user_role != "admin":
+                    if existing.data.get("uploaded_by") != user_id:
+                        raise HTTPException(status_code=403, detail="Not your title")
+                
+                # Update status to processing
+                supabase.table("titles").update({
+                    "status": "processing",
+                    "trailer_youtube_url": video_url
+                }).eq("id", title_id).execute()
+                
+                logger.info(f"✅ Updated existing title {title_id} to processing")
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"❌ Failed to verify/update title: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to verify title: {str(e)}")
         
-        title_data = {
-            "title": title_text,
-            "status": "pending",
-            "type": "movie",
-            "uploaded_by": user_id,  # Use uploaded_by, NOT creator_id!
-            "slug": slug,
-            "trailer_youtube_url": video_url
-        }
-        
-        # Insert title into Supabase
-        logger.info(f"📝 Creating title: {title_text}")
-        title_result = supabase.table('titles').insert(title_data).execute()
-        
-        if not title_result.data or len(title_result.data) == 0:
-            logger.error("Failed to create title in database")
-            raise HTTPException(status_code=500, detail="Failed to create title in database")
-        
-        title_id = title_result.data[0]['id']
-        logger.info(f"✅ Title created with ID: {title_id}")
+        # Case 2: No title_id (backward compatibility)
+        else:
+            logger.warning("⚠️ No title_id provided, creating new title (deprecated flow)")
+            
+            # Create title data
+            title_text = video_title or "Untitled"
+            slug = generate_slug(title_text)
+            
+            title_data = {
+                "title": title_text,
+                "status": "processing",
+                "type": "movie",
+                "uploaded_by": user_id,
+                "slug": slug,
+                "trailer_youtube_url": video_url
+            }
+            
+            # Insert title into Supabase
+            logger.info(f"📝 Creating title: {title_text}")
+            title_result = supabase.table('titles').insert(title_data).execute()
+            
+            if not title_result.data or len(title_result.data) == 0:
+                logger.error("Failed to create title in database")
+                raise HTTPException(status_code=500, detail="Failed to create title in database")
+            
+            title_id = title_result.data[0]['id']
+            logger.info(f"✅ Created new title: {title_id}")
         
         # Create analysis job in local database
         async with get_db() as db:
