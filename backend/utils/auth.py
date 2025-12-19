@@ -120,39 +120,53 @@ async def verify_creator(
         supabase = get_supabase_client()
         
         # Get user from JWT token
-        user_response = supabase.auth.get_user(credentials.credentials)
+        user_response = supabase.auth. get_user(credentials.credentials)
         
         if not user_response or not user_response.user:
             raise HTTPException(status_code=401, detail="Invalid authentication token")
         
         user = user_response.user
         user_email = user.email
-        user_role = user.user_metadata.get('role', '')
+        
+        # ✅ FIX: Get role from profiles table (NOT from user_metadata)
+        profile_response = supabase.table("profiles") \
+            .select("role") \
+            .eq("id", user.id) \
+            .single() \
+            .execute()
+        
+        if not profile_response. data:
+            logger.warning(f"⚠️ No profile found for user:  {user. id}")
+            user_role = "user"  # Default role
+        else: 
+            user_role = profile_response.data. get("role", "user")
+        
+        logger.info(f"🔍 User {user_email} role from profiles table: {user_role}")
         
         # Check creator status (creator or admin)
         is_creator = user_role in ['creator', 'admin'] or is_admin_email(user_email)
         
         if not is_creator:
-            logger.warning(f"⚠️ Non-creator user attempted creator action: {user_email}")
+            logger.warning(f"⚠️ Non-creator user attempted creator action:  {user_email} (role: {user_role})")
             raise HTTPException(
                 status_code=403, 
                 detail="Creator access required. Please upgrade your account."
             )
         
-        logger.info(f"✅ Creator verified: {user_email}")
+        logger.info(f"✅ Creator verified: {user_email} (role: {user_role})")
         
         return {
             "id": user.id,
             "email": user_email,
-            "role": user_role,
+            "role": user_role,  # ✅ profiles tablosundan gelen role
             "is_admin": is_admin_email(user_email),
             "is_creator": True
         }
         
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"❌ Creator verification failed: {e}")
+    except Exception as e: 
+        logger.error(f"❌ Creator verification failed: {e}", exc_info=True)
         raise HTTPException(status_code=401, detail="Authentication failed")
 
 

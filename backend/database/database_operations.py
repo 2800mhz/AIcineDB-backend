@@ -702,3 +702,74 @@ class DatabaseOperations:
         query = "SELECT * FROM film_frames WHERE id = :frame_id"
         result = await self.db.fetch_one(query, values={"frame_id": frame_id})
         return dict(result) if result else None
+    
+    # ============================================================================
+    # CAST & CREW
+    # ============================================================================
+    
+    async def save_cast_members(db, film_id: int, cast_data: List[Dict]) -> bool:
+        """
+        Save cast/crew members to local DB with graceful error handling
+        
+        Args:
+            db:  Database connection
+            film_id:  Film ID
+            cast_data:  List of cast member dictionaries
+            
+        Returns:
+            bool:  True (non-blocking - Supabase sync handles persistence)
+        """
+        try:
+            # Check if film_cast table exists
+            table_exists = await db. fetch_one("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_schema = 'public' 
+                    AND table_name = 'film_cast'
+                )
+            """)
+            
+            if not table_exists or not table_exists[0]: 
+                logger.info("ℹ️ film_cast table not found in local DB")
+                logger.info("✅ Cast data will be persisted via Supabase sync (title_cast table)")
+                return True  # Not an error - Supabase handles persistence
+            
+            # Table exists - proceed with local save
+            logger.info(f"💾 Saving {len(cast_data)} cast members to local DB...")
+            
+            # Clear existing cast for this film
+            try:
+                await db.execute("DELETE FROM film_cast WHERE film_id = $1", film_id)
+                logger.debug(f"🗑️ Cleared existing cast for film {film_id}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not clear existing cast (continuing): {e}")
+            
+            # Insert cast members
+            success_count = 0
+            for member in cast_data:
+                try:
+                    await db.execute("""
+                        INSERT INTO film_cast (
+                            film_id, name, role, character_name, 
+                            screen_time, created_at
+                        )
+                        VALUES ($1, $2, $3, $4, $5, NOW())
+                    """, 
+                        film_id,
+                        member.get('name', 'Unknown'),
+                        member.get('role', 'actor'),
+                        member.get('character_name', ''),
+                        float(member. get('screen_time', 0.0))
+                    )
+                    success_count += 1
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to save cast member '{member.get('name')}': {e}")
+                    continue
+            
+            logger.info(f"✅ Saved {success_count}/{len(cast_data)} cast members to local DB")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Cast save to local DB failed (non-critical): {e}")
+            logger.info("✅ Cast data will be persisted via Supabase sync")
+            return True  # Non-blocking - Supabase sync is the source of truth

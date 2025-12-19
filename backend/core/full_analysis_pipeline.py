@@ -110,18 +110,25 @@ class FullAnalysisPipeline:
                         extracted_title = title_result.get('title')
                         confidence = title_result.get('confidence', 'none')
                         
-                        logger.info(f"🎬 Extracted title from tweet: '{extracted_title}' (confidence: {confidence})")
+                        logger.info(f"🎬 Title extraction result: '{extracted_title}' (confidence: {confidence})")
                         
-                        # Use extracted title if confidence is not 'none'
-                        if confidence != 'none' and extracted_title != 'Unknown Title':
+                        # Use extracted title if confidence is acceptable
+                        if confidence in ['high', 'medium'] and extracted_title != 'Unknown Title':
                             video_info['extracted_title'] = extracted_title
-                            # Update the title to use extracted one
                             video_info['title'] = extracted_title
-                            logger.info(f"✓ Using extracted title: {extracted_title}")
+                            video_info['title_extraction_confidence'] = confidence
+                            logger.info(f"✅ Using Gemini-extracted title: '{extracted_title}'")
                         else:
-                            logger.info(f"⚠️ Low confidence title extraction, using original: {video_info['title']}")
+                            logger.info(f"⚠️ Title extraction confidence too low ({confidence}), using fallback")
+                            # Use yt-dlp title or generic fallback
+                            fallback_title = video_info.get('title', 'Untitled Film')
+                            video_info['title'] = fallback_title
+                            video_info['title_extraction_confidence'] = 'none'
+                            
                     except Exception as e:
-                        logger.warning(f"⚠️ Title extraction failed: {e}")
+                        logger. warning(f"⚠️ Title extraction failed: {e}")
+                        video_info['title'] = video_info.get('title', 'Untitled Film')
+                        video_info['title_extraction_confidence'] = 'error'
             
             self._update_progress(progress_callback, 0.15, f"✓ Downloaded: {video_info['title']}")
             
