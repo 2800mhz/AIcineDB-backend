@@ -241,16 +241,8 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
         # NOTE: Cast/crew is now saved to Supabase title_cast table only
         # Local PostgreSQL film_cast table is no longer used
         # This avoids "relation film_cast does not exist" errors in Supabase-only deployments
-        if film_id_int:
-            update_progress(0.85, "💾 Cast & crew will be synced to Supabase...")
-            logger.info("ℹ️ Skipping local DB save - cast/crew will be saved to Supabase title_cast table")
-            # Commenting out local save as Supabase is the source of truth
-            # try:
-            #     await _save_cast_crew(db_ops, film_id_int, analysis_result)
-            # except Exception as e:
-            #     logger.error(f"❌ Failed to save cast/crew to DB: {e}", exc_info=True)
-        else:
-            logger.warning("Skipping relational DB save: Film ID not available.")
+        update_progress(0.85, "💾 Cast & crew will be synced to Supabase...")
+        logger.info("ℹ️ Skipping local DB save - cast/crew will be saved to Supabase title_cast table")
             
         update_progress(0.90, "☁️ Syncing to cloud...")
 
@@ -275,11 +267,15 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
                         from datetime import datetime
                         
                         update_data = {
+                            'title': analysis_result.get('title', 'Unknown'),  # Update with extracted title
                             'status': 'completed',
                             'duration': int((analysis_result.get('duration') or 0) / 60),  # Convert to minutes, protect against None
                             'description': analysis_result.get('description', ''),
                             'year': analysis_result.get('year') or datetime.now().year,  # Use current year as fallback
                         }
+                        
+                        # NOTE: uploaded_by is NOT included in update_data, so it will be preserved
+                        # Supabase update() only modifies the fields specified in the data dict
                         
                         # Add optional fields if available
                         if analysis_result.get('narrative', {}).get('themes'):
