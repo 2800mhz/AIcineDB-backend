@@ -8,9 +8,13 @@ import logging
 import asyncio
 from celery import Task
 from backend.tasks.celery_app import app
+from backend.services.supabase_sync import SupabaseSyncService
 
 # Setup logging
 logger = logging.getLogger(__name__)
+
+# Constants
+MAX_ERROR_MESSAGE_LENGTH = 500  # Maximum length for error messages in database
 
 # --- Base Task ---
 
@@ -47,6 +51,20 @@ def analyze_film_complete(self, job_id: int, url: str, title_id: str = None):
             loop.run_until_complete(_update_job_failed(job_id, str(e)))
         except Exception as db_error:
             logger.error(f"Failed to update job status: {db_error}")
+        
+        # Update title status to failed if title_id was provided
+        if title_id:
+            try:
+                sync = SupabaseSyncService()
+                if sync.enabled and sync.supabase:
+                    sync.supabase.table('titles').update({
+                        'status': 'failed',
+                        'moderator_notes': f"Analysis failed: {str(e)[:MAX_ERROR_MESSAGE_LENGTH]}"
+                    }).eq('id', title_id).execute()
+                    logger.info(f"✅ Updated title {title_id} status to 'failed'")
+            except Exception as title_error:
+                logger.warning(f"⚠️ Failed to update title status: {title_error}")
+        
         raise e
     finally:
         try:

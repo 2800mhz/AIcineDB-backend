@@ -26,6 +26,7 @@ from backend.models.schemas import (
     HealthCheck
 )
 from backend.api.festivals import router as festivals_router
+from backend.api.upload import router as upload_router
 
 # Configure logging
 logging.basicConfig(
@@ -62,6 +63,9 @@ app.add_middleware(
 
 # Include routers
 app.include_router(festivals_router, prefix="/api", tags=["festivals"])
+app.include_router(upload_router, tags=["upload"])
+
+logger.info("✅ Upload router registered at /api/upload")
 
 
 # ============================================================================
@@ -543,181 +547,12 @@ async def search_films(
         logger.error(f"Error searching films: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ============================================================================
-# UPLOAD ENDPOINT
+# UPLOAD ENDPOINT - MOVED TO backend/api/upload.py
 # ============================================================================
-
-def generate_slug(title: str) -> str:
-    """Generate URL-friendly slug from title"""
-    import re
-    if not title:
-        return "untitled"
-    
-    # Convert to lowercase
-    slug = title.lower()
-    
-    # Replace spaces and underscores with hyphens
-    slug = re.sub(r'[\s_]+', '-', slug)
-    
-    # Remove any characters that aren't alphanumeric or hyphens
-    slug = re.sub(r'[^a-z0-9\-]', '', slug)
-    
-    # Remove multiple consecutive hyphens
-    slug = re.sub(r'-+', '-', slug)
-    
-    # Remove leading/trailing hyphens
-    slug = slug.strip('-')
-    
-    # Ensure we have something
-    if not slug:
-        slug = "untitled"
-    
-    return slug
-
-
-# Status constants for title processing
-PROCESSING_STATUS = "processing"
-
-
-@app.post("/api/upload", response_model=AnalysisJobResponse)
-async def upload_video(
-    video_url: str = Form(...),
-    video_title: Optional[str] = Form(None),
-    title_id: Optional[str] = Form(None),
-    priority: int = Form(5),
-    current_user: dict = Depends(verify_creator_or_admin)
-):
-    """
-    Video upload and analysis endpoint
-    
-    Only creators and admins can upload videos.
-    If title_id is provided, updates that existing title (preferred).
-    Otherwise creates a new title (backward compatibility).
-    """
-    try:
-        user_id = current_user['id']
-        user_role = current_user['role']
-        
-        logger.info(f"📤 Upload request from user {user_id} ({user_role})")
-        
-        # Get Supabase client
-        from backend.services.supabase_sync import get_supabase_client
-        supabase = get_supabase_client()
-        
-        if not supabase:
-            raise HTTPException(status_code=500, detail="Supabase client not available")
-        
-        # Case 1: Frontend sent title_id (PREFERRED)
-        if title_id:
-            logger.info(f"✅ Using existing title_id from frontend: {title_id}")
-            
-            # Verify title exists and belongs to user
-            try:
-                # Fetch the title - handle case where .single() raises exception if not found
-                existing_response = supabase.table("titles") \
-                    .select("id, uploaded_by, status") \
-                    .eq("id", title_id) \
-                    .execute()
-                
-                # Check if title exists
-                if not existing_response.data or len(existing_response.data) == 0:
-                    raise HTTPException(status_code=404, detail="Title not found")
-                
-                existing = existing_response.data[0]
-                
-                # Verify ownership (unless admin)
-                if user_role != "admin" and existing.get("uploaded_by") != user_id:
-                    raise HTTPException(status_code=403, detail="Not your title")
-                
-                # Update status to processing
-                update_result = supabase.table("titles").update({
-                    "status": PROCESSING_STATUS,
-                    "trailer_youtube_url": video_url
-                }).eq("id", title_id).execute()
-                
-                # Note: update_result.data can be empty if values are identical
-                # We verify the title exists above, so we don't need to check update result
-                logger.debug(f"Update result: {len(update_result.data) if update_result.data else 0} rows affected")
-                logger.info(f"✅ Updated existing title {title_id} to processing")
-                
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"❌ Failed to verify/update title: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to verify title: {str(e)}")
-        
-        # Case 2: No title_id (backward compatibility)
-        else:
-            logger.warning("⚠️ No title_id provided, creating new title (deprecated flow)")
-            
-            # Create title data
-            title_text = video_title or "Untitled"
-            slug = generate_slug(title_text)
-            
-            title_data = {
-                "title": title_text,
-                "status": PROCESSING_STATUS,
-                "type": "movie",
-                "uploaded_by": user_id,
-                "slug": slug,
-                "trailer_youtube_url": video_url
-            }
-            
-            # Insert title into Supabase
-            logger.info(f"📝 Creating title: {title_text}")
-            title_result = supabase.table('titles').insert(title_data).execute()
-            
-            if not title_result.data or len(title_result.data) == 0:
-                logger.error("Failed to create title in database")
-                raise HTTPException(status_code=500, detail="Failed to create title in database")
-            
-            title_id = title_result.data[0]['id']
-            logger.info(f"✅ Created new title: {title_id}")
-        
-        # Create analysis job in local database
-        async with get_db() as db:
-            job = await db.fetch_one(
-                query="""
-                INSERT INTO analysis_jobs (url, status, priority)
-                VALUES (:url, 'pending', :priority)
-                RETURNING *
-                """,
-                values={
-                    "url": video_url,
-                    "priority": priority
-                }
-            )
-            
-            if not job:
-                raise HTTPException(status_code=500, detail="Failed to create analysis job")
-            
-            job_id = job['id']
-            logger.info(f"✅ Analysis job created with ID: {job_id}")
-            
-            # Start Celery task for analysis
-            from backend.tasks.video_tasks import analyze_film_complete
-            task = analyze_film_complete.delay(
-                job_id,
-                video_url,
-                title_id=title_id  # Pass title_id to task
-            )
-            
-            logger.info(f"🔥 Started analysis task: {task.id}")
-            
-            return AnalysisJobResponse(
-                job_id=job_id,
-                status=job['status'],
-                url=video_url,
-                created_at=job['created_at'],
-                celery_task_id=task.id
-            )
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error uploading video: {e}")
-        raise HTTPException(status_code=500, detail=f"Error uploading video: {str(e)}")
+# The upload endpoint has been refactored into a separate router module
+# See: backend/api/upload.py
+# Registered in app.include_router(upload_router) above
 
 
 # ============================================================================
