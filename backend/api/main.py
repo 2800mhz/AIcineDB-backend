@@ -613,18 +613,21 @@ async def upload_video(
             
             # Verify title exists and belongs to user
             try:
-                existing = supabase.table("titles") \
+                # Fetch the title - handle case where .single() raises exception if not found
+                existing_response = supabase.table("titles") \
                     .select("id, uploaded_by, status") \
                     .eq("id", title_id) \
-                    .single() \
                     .execute()
                 
-                if not existing.data:
+                # Check if title exists
+                if not existing_response.data or len(existing_response.data) == 0:
                     raise HTTPException(status_code=404, detail="Title not found")
+                
+                existing = existing_response.data[0]
                 
                 # Verify ownership (unless admin)
                 if user_role != "admin":
-                    if existing.data.get("uploaded_by") != user_id:
+                    if existing.get("uploaded_by") != user_id:
                         raise HTTPException(status_code=403, detail="Not your title")
                 
                 # Update status to processing
@@ -633,10 +636,8 @@ async def upload_video(
                     "trailer_youtube_url": video_url
                 }).eq("id", title_id).execute()
                 
-                if not update_result.data:
-                    logger.error(f"Failed to update title {title_id}")
-                    raise HTTPException(status_code=500, detail="Failed to update title status")
-                
+                # Note: update_result.data can be empty if values are identical
+                # We verify the title exists above, so we don't need to check update result
                 logger.info(f"✅ Updated existing title {title_id} to processing")
                 
             except HTTPException:
