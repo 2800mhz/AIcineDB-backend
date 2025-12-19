@@ -275,58 +275,7 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
             if sync.enabled:
                 logger.info(f"🔄 Supabase sync enabled - Starting sync...")
                 
-                # If title_id was provided (from upload endpoint), use it directly
-                if title_id:
-                    logger.info(f"📝 Using pre-created title ID: {title_id}")
-                    supabase_id = title_id
-                    
-                    # Update the existing title with analysis results
-                    try:
-                        from datetime import datetime
-                        
-                        update_data = {
-                            'title': analysis_result.get('title', 'Unknown'),  # Update with extracted title
-                            'status': 'completed',
-                            'duration': int((analysis_result.get('duration') or 0) / 60),  # Convert to minutes, protect against None
-                            'description': analysis_result.get('description', ''),
-                            'year': analysis_result.get('year') or datetime.now().year,  # Use current year as fallback
-                        }
-                        
-                        # NOTE: uploaded_by is NOT included in update_data, so it will be preserved
-                        # Supabase update() only modifies the fields specified in the data dict
-                        
-                        # Add optional fields if available
-                        if analysis_result.get('narrative', {}).get('themes'):
-                            themes = analysis_result['narrative']['themes']
-                            if isinstance(themes, list):
-                                theme_names = [t.get('name', t) if isinstance(t, dict) else str(t) for t in themes[:5]]
-                                update_data['tags'] = theme_names
-                        
-                        if analysis_result.get('narrative', {}).get('genre'):
-                            update_data['genres'] = analysis_result['narrative']['genre']
-                        
-                        if analysis_result.get('style_fingerprint'):
-                            update_data['style_fingerprint'] = analysis_result['style_fingerprint']
-                        
-                        # Update title in Supabase
-                        sync.supabase.table('titles').update(update_data).eq('id', title_id).execute()
-                        logger.info(f"✅ Updated existing title {title_id} with analysis results")
-                        
-                        # Sync cast & crew to title_cast table
-                        film_data_for_cast = {
-                            'cast': analysis_result.get('cast', []),
-                            'crew': analysis_result.get('crew', []),
-                        }
-                        await sync._sync_cast_crew(title_id, film_data_for_cast)
-                        logger.info(f"✅ Synced cast/crew for title {title_id}")
-                        
-                    except Exception as update_err:
-                        logger.warning(f"⚠️ Failed to update title {title_id}: {update_err}")
-                        # Continue anyway - the title exists
-                else:
-                    # No pre-created title - use existing sync logic
-                    logger.info(f"📝 No pre-created title - creating new one via sync")
-                    
+                # Prepare film data for sync
                 film_data = {
                     'job_id': str(job_id),
                     'title': analysis_result.get('title', 'Unknown'),
@@ -348,18 +297,15 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
                     'crew': analysis_result.get('crew', []),
                 }
                 
-                # Only sync/create title if title_id was NOT provided
-                if not title_id:
-                    result = await sync.sync_film(film_data)
-                    
-                    if result and result.get('id'):
-                        supabase_id = result['id']
-                        logger.info(f"✅ Synced to Supabase - Title ID: {supabase_id}")
-                    else:
-                        logger.warning("⚠️ Supabase sync returned no title_id - keyframes will not be uploaded")
-                        supabase_id = None
+                # Sync to Supabase (will update if title_id provided, or create/update by job_id/slug)
+                result = await sync.sync_film(film_data, title_id=title_id)
+                
+                if result and result.get('id'):
+                    supabase_id = result['id']
+                    logger.info(f"✅ Synced to Supabase - Title ID: {supabase_id}")
                 else:
-                    logger.info(f"✅ Using pre-created title ID: {supabase_id}")
+                    logger.warning("⚠️ Supabase sync returned no title_id - keyframes will not be uploaded")
+                    supabase_id = None
                 
                 # Upload frames if we have a supabase_id
                 if supabase_id:
@@ -371,7 +317,6 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
                     update_progress(0.95, "📤 Uploading frames to cloud storage...")
                     
                     uploaded_frame_count = 0
-                    total_duration = analysis_result.get('duration', 0)
                     
                     # First, try uploading from frames list
                     if frames:
@@ -397,8 +342,7 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
                             try:
                                 uploaded_frame_count = await sync.upload_keyframes(
                                     supabase_id, 
-                                    keyframes_dir,
-                                    total_duration=total_duration
+                                    keyframes_dir
                                 )
                                 logger.info(f"✅ Uploaded {uploaded_frame_count} keyframes")
                             except Exception as upload_err:
@@ -418,8 +362,7 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
                                     try:
                                         uploaded_frame_count = await sync.upload_keyframes(
                                             supabase_id, 
-                                            alt_path,
-                                            total_duration=total_duration
+                                            alt_path
                                         )
                                         logger.info(f"✅ Uploaded {uploaded_frame_count} keyframes from alt path")
                                         break
