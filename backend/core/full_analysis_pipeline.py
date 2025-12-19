@@ -348,76 +348,23 @@ class FullAnalysisPipeline:
             self._update_progress(progress_callback, 0.97, "✓ Saved to database")
             
             # ============================================================
-            # STAGE 11: Sync to Supabase (97-99%)
+            # STAGE 11: Sync to Supabase (REMOVED - Now handled in video_tasks.py)
             # ============================================================
-            supabase_title_id = None  # Track the Supabase title_id
+            # NOTE: Supabase sync has been moved to video_tasks.py (after analysis completes)
+            # This ensures we have access to the title_id from the frontend and prevents
+            # duplicate title creation. The sync in video_tasks.py handles:
+            # - Syncing with proper title_id (no duplicates)
+            # - Proper user_id/uploaded_by attribution
+            # - Frame uploads
+            # - Poster uploads
             
-            if self.supabase_sync.enabled:
-                self._update_progress(progress_callback, 0.97, "🔄 Syncing to showcase platform...")
-                
-                try:
-                    # First sync to get title_id
-                    supabase_result = await self.supabase_sync.sync_film(analysis_result)
-                    if supabase_result:
-                        supabase_title_id = supabase_result.get('id')
-                        logger.info(f"✓ Supabase title_id: {supabase_title_id}")
-                        
-                        # Upload poster if available
-                        if analysis_result.get('thumbnail_path') and supabase_title_id:
-                            self._update_progress(progress_callback, 0.98, "📤 Uploading poster...")
-                            try:
-                                poster_url = self.supabase_sync.upload_poster_image(
-                                    analysis_result['thumbnail_path'],
-                                    supabase_title_id
-                                )
-                                if poster_url:
-                                    # Update analysis_result and re-sync with poster_url
-                                    analysis_result['poster_url'] = poster_url
-                                    logger.info(f"✅ Poster uploaded: {poster_url}")
-                                    
-                                    # Re-sync to update poster_url in database
-                                    await self.supabase_sync.sync_film(analysis_result)
-                                    logger.info("✓ Updated Supabase with poster URL")
-                            except Exception as poster_error:
-                                logger.warning(f"⚠️ Poster upload failed (non-critical): {poster_error}")
-                    
-                    self._update_progress(progress_callback, 0.99, "✓ Synced to showcase platform")
-                except Exception as sync_error:
-                    logger.warning(f"⚠ Supabase sync failed (non-critical): {sync_error}")
-                    self._update_progress(progress_callback, 0.99, "⚠ Showcase sync skipped")
+            self._update_progress(progress_callback, 0.97, "✓ Analysis complete - sync will happen in next stage")
             
             # ============================================================
-            # STAGE 11.5: Upload Keyframes to Supabase (99-100%)
+            # STAGE 11.5: Upload Keyframes to Supabase (REMOVED - Now handled in video_tasks.py)
             # ============================================================
-            # ✅ CRITICAL: ALWAYS use the title_id from Supabase sync, NEVER use a provided parameter
-            # This ensures each analysis gets unique storage
-            final_title_id = supabase_title_id
-            
-            if final_title_id and self.supabase_sync.enabled:
-                try:
-                    self._update_progress(progress_callback, 0.99, "📤 Uploading keyframes to cloud...")
-                    
-                    from backend.services.frame_uploader import FrameUploader
-                    uploader = FrameUploader()
-                    
-                    uploaded_frames = await uploader.upload_keyframes(
-                        keyframes_dir=str(keyframes_dir),
-                        title_id=final_title_id,
-                        film_title=analysis_result.get('title', 'Unknown')
-                    )
-                    
-                    logger.info(f"✅ Uploaded {len(uploaded_frames)} keyframes to Supabase for title_id: {final_title_id}")
-                    self._update_progress(progress_callback, 1.0, f"✅ Analysis complete! ({len(uploaded_frames)} frames uploaded)")
-                    
-                except Exception as upload_error:
-                    logger.error(f"⚠️ Keyframe upload failed: {upload_error}")
-                    self._update_progress(progress_callback, 1.0, "✅ Analysis complete! (frame upload failed)")
-            else:
-                if not final_title_id:
-                    logger.warning("ℹ️ No title_id from Supabase sync - keyframes will not be uploaded")
-                if not self.supabase_sync.enabled:
-                    logger.info("ℹ️ Supabase sync disabled - keyframes will not be uploaded")
-                self._update_progress(progress_callback, 1.0, "✅ Analysis complete!")
+            # NOTE: Keyframe uploads have been moved to video_tasks.py
+            # This prevents duplicate uploads and ensures proper title_id is used
             
             logger.info(f"✅ Complete analysis finished for: {video_info['title']}")
             

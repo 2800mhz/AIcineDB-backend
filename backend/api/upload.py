@@ -174,13 +174,14 @@ async def upload_video(
         async with get_db() as db:
             job = await db.fetch_one(
                 query="""
-                INSERT INTO analysis_jobs (url, status, priority)
-                VALUES (:url, 'pending', :priority)
+                INSERT INTO analysis_jobs (url, status, priority, user_id)
+                VALUES (:url, 'pending', :priority, :user_id)
                 RETURNING *
                 """,
                 values={
                     "url": str(request.url),
-                    "priority": request.priority or 5
+                    "priority": request.priority or 5,
+                    "user_id": user_id
                 }
             )
             
