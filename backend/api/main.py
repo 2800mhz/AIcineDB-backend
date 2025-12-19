@@ -604,6 +604,9 @@ async def upload_video(
         if not supabase:
             raise HTTPException(status_code=500, detail="Supabase client not available")
         
+        # Status constant for consistency
+        PROCESSING_STATUS = "processing"
+        
         # Case 1: Frontend sent title_id (PREFERRED)
         if title_id:
             logger.info(f"✅ Using existing title_id from frontend: {title_id}")
@@ -625,10 +628,14 @@ async def upload_video(
                         raise HTTPException(status_code=403, detail="Not your title")
                 
                 # Update status to processing
-                supabase.table("titles").update({
-                    "status": "processing",
+                update_result = supabase.table("titles").update({
+                    "status": PROCESSING_STATUS,
                     "trailer_youtube_url": video_url
                 }).eq("id", title_id).execute()
+                
+                if not update_result.data:
+                    logger.error(f"Failed to update title {title_id}")
+                    raise HTTPException(status_code=500, detail="Failed to update title status")
                 
                 logger.info(f"✅ Updated existing title {title_id} to processing")
                 
@@ -648,7 +655,7 @@ async def upload_video(
             
             title_data = {
                 "title": title_text,
-                "status": "processing",
+                "status": PROCESSING_STATUS,
                 "type": "movie",
                 "uploaded_by": user_id,
                 "slug": slug,
