@@ -1,4 +1,6 @@
 #!/bin/bash
+set -e  # Exit immediately if any command fails
+
 # Script to apply database migration: Add user_id to analysis_jobs table
 
 # This script applies migration 003_add_user_id_to_analysis_jobs.sql

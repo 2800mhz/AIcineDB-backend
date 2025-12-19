@@ -358,7 +358,6 @@ class FullAnalysisPipeline:
             # - Frame uploads
             # - Poster uploads
             
-            supabase_title_id = None  # Not used anymore - kept for backward compatibility
             self._update_progress(progress_callback, 0.97, "✓ Analysis complete - sync will happen in next stage")
             
             # ============================================================
