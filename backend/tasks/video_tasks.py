@@ -47,6 +47,21 @@ def analyze_film_complete(self, job_id: int, url: str, title_id: str = None):
             loop.run_until_complete(_update_job_failed(job_id, str(e)))
         except Exception as db_error:
             logger.error(f"Failed to update job status: {db_error}")
+        
+        # Update title status to failed if title_id was provided
+        if title_id:
+            try:
+                from backend.services.supabase_sync import SupabaseSyncService
+                sync = SupabaseSyncService()
+                if sync.enabled and sync.supabase:
+                    sync.supabase.table('titles').update({
+                        'status': 'failed',
+                        'moderator_notes': f"Analysis failed: {str(e)[:500]}"
+                    }).eq('id', title_id).execute()
+                    logger.info(f"✅ Updated title {title_id} status to 'failed'")
+            except Exception as title_error:
+                logger.warning(f"⚠️ Failed to update title status: {title_error}")
+        
         raise e
     finally:
         try:
