@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS analysis_jobs (
     id SERIAL PRIMARY KEY,
     url TEXT NOT NULL,
     film_id INTEGER REFERENCES films(id) ON DELETE CASCADE,
+    user_id TEXT,  -- UUID of uploader from Supabase profiles table
     
     status VARCHAR(50) DEFAULT 'pending',
     progress FLOAT DEFAULT 0.0,

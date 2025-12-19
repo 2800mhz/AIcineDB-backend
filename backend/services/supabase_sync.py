@@ -437,6 +437,12 @@ class SupabaseSyncService:
             "scene_count": len(scenes),
         }
         
+        # Add uploaded_by if user_id is provided
+        # Only set this for NEW titles; don't overwrite for existing titles
+        user_id = film_data.get('user_id')
+        if user_id:
+            title_record["uploaded_by"] = user_id
+        
         # Remove None values to let Supabase use defaults
         return {k: v for k, v in title_record.items() if v is not None}
 
@@ -543,6 +549,12 @@ class SupabaseSyncService:
             
             # Map the analysis data to Supabase schema
             title_record = self._map_analysis_to_title(film_data)
+            
+            # IMPORTANT: When updating an existing title (title_id provided),
+            # don't overwrite uploaded_by - it was set by the frontend when creating the title
+            if title_id and "uploaded_by" in title_record:
+                logger.info(f"ℹ️ Removing uploaded_by from update to preserve frontend value")
+                title_record.pop("uploaded_by")
             
             async with httpx.AsyncClient(timeout=30.0) as client:
                 # Step 1: Check if we should update an existing title
