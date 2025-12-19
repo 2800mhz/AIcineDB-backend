@@ -576,6 +576,10 @@ def generate_slug(title: str) -> str:
     return slug
 
 
+# Status constants for title processing
+PROCESSING_STATUS = "processing"
+
+
 @app.post("/api/upload", response_model=AnalysisJobResponse)
 async def upload_video(
     video_url: str = Form(...),
@@ -604,9 +608,6 @@ async def upload_video(
         if not supabase:
             raise HTTPException(status_code=500, detail="Supabase client not available")
         
-        # Status constant for consistency
-        PROCESSING_STATUS = "processing"
-        
         # Case 1: Frontend sent title_id (PREFERRED)
         if title_id:
             logger.info(f"✅ Using existing title_id from frontend: {title_id}")
@@ -626,9 +627,8 @@ async def upload_video(
                 existing = existing_response.data[0]
                 
                 # Verify ownership (unless admin)
-                if user_role != "admin":
-                    if existing.get("uploaded_by") != user_id:
-                        raise HTTPException(status_code=403, detail="Not your title")
+                if user_role != "admin" and existing.get("uploaded_by") != user_id:
+                    raise HTTPException(status_code=403, detail="Not your title")
                 
                 # Update status to processing
                 update_result = supabase.table("titles").update({
