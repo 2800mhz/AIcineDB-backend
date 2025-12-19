@@ -8,6 +8,7 @@ import logging
 import asyncio
 from celery import Task
 from backend.tasks.celery_app import app
+from backend.services.supabase_sync import SupabaseSyncService
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -51,7 +52,6 @@ def analyze_film_complete(self, job_id: int, url: str, title_id: str = None):
         # Update title status to failed if title_id was provided
         if title_id:
             try:
-                from backend.services.supabase_sync import SupabaseSyncService
                 sync = SupabaseSyncService()
                 if sync.enabled and sync.supabase:
                     sync.supabase.table('titles').update({

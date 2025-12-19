@@ -4,7 +4,7 @@ Handles video URL uploads from frontend with optional pre-created title_id
 """
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, HttpUrl
-from typing import Optional
+from typing import Optional, Dict, Any
 import logging
 import re
 
@@ -16,6 +16,10 @@ from backend.models.schemas import AnalysisJobResponse
 
 router = APIRouter(prefix="/api", tags=["upload"])
 logger = logging.getLogger(__name__)
+
+# Type alias for user dict from auth
+# Structure: {"id": str, "email": str, "role": str, "is_admin": bool, "is_creator": bool}
+UserDict = Dict[str, Any]
 
 
 class UploadRequest(BaseModel):
@@ -63,7 +67,7 @@ def generate_slug(title: str) -> str:
 @router.post("/upload", response_model=AnalysisJobResponse)
 async def upload_video(
     request: UploadRequest,
-    current_user: dict = Depends(verify_creator_or_admin)
+    current_user: UserDict = Depends(verify_creator_or_admin)
 ):
     """
     Upload video URL for AI analysis.
@@ -199,7 +203,8 @@ async def upload_video(
                 status=job['status'],
                 url=str(request.url),
                 created_at=job['created_at'],
-                celery_task_id=task.id
+                celery_task_id=task.id,
+                progress=0.0  # Initial progress
             )
         
     except HTTPException:
