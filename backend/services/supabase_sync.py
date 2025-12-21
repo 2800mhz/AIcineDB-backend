@@ -520,21 +520,14 @@ class SupabaseSyncService:
 
     async def sync_film(self, film_data: Dict, title_id: str = None) -> Optional[Dict]:
         """
-        Sync a film analysis to Supabase with proper conflict handling.
+        Sync a film analysis to Supabase with proper conflict handling. 
         
         Strategy:
-        1. If title_id is provided: UPDATE that specific record
-        2. Otherwise, check if film exists by aicinedb_film_id or slug
+        1. If title_id is provided:  UPDATE that specific record
+        2. Otherwise, check if film exists by backend_job_id or slug  # 👈 BURADA DEĞİŞİKLİK
         3. If exists: UPDATE the record
         4. If new: INSERT new record
         5. Always return title_id for frame upload
-        
-        Args:
-            film_data: Complete analysis result from the pipeline
-            title_id: Optional Supabase title UUID (if pre-created by upload endpoint)
-            
-        Returns:
-            The synced record from Supabase, or None if sync failed/disabled
         """
         if not self.enabled:
             logger.debug("Supabase sync is disabled, skipping")
@@ -550,22 +543,12 @@ class SupabaseSyncService:
             # Map the analysis data to Supabase schema
             title_record = self._map_analysis_to_title(film_data)
             
-            # IMPORTANT: Preserve uploaded_by when updating existing titles
-            # When title_id is provided (UPDATE case), the title was already created by the frontend
-            # with the correct uploaded_by (creator's UUID). We should NOT overwrite it with
-            # backend-derived values to maintain proper creator attribution.
-            # Only set uploaded_by when creating NEW titles (no title_id).
-            if title_id and "uploaded_by" in title_record:
-                logger.info(f"ℹ️ Removing uploaded_by from update to preserve frontend value")
-                title_record.pop("uploaded_by")
-            
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # Step 1: Check if we should update an existing title
                 existing_title = None
                 
-                # If title_id is provided, update that specific record
+                # Step 1: If title_id is provided, update that specific record
                 if title_id:
-                    logger.info(f"✓ Updating existing title: {title_id}")
+                    logger.info(f"✓ Updating existing title:  {title_id}")
                     update_url = f"{self.rest_url}/titles"
                     update_headers = {
                         **self.headers,
@@ -573,13 +556,19 @@ class SupabaseSyncService:
                         "Content-Type": "application/json; charset=utf-8"
                     }
                     
-                    json_data = json.dumps(title_record, ensure_ascii=False)
+                    # 🔥 ÖNEMLİ: slug ve aicinedb_film_id'yi update'den çıkar
+                    update_data = {k: v for k, v in title_record.items() 
+                                if k not in ['slug', 'aicinedb_film_id']}  # 👈 YENİ
+                    
+                    logger.info(f"✓ Removing slug and backend_job_id from update (preserving existing values)")  # 👈 YENİ
+                    
+                    json_data = json.dumps(update_data, ensure_ascii=False)
                     
                     response = await client.patch(
                         update_url,
                         headers=update_headers,
                         params={"id": f"eq.{title_id}"},
-                        content=json_data.encode('utf-8')
+                        content=json_data. encode('utf-8')
                     )
                     response.raise_for_status()
                     result = response.json()
@@ -587,39 +576,38 @@ class SupabaseSyncService:
                     if result and len(result) > 0:
                         existing_title = result[0]
                         logger.info(f"✅ Updated title in Supabase: {title_id}")
-                    else:
+                    else: 
                         # Fetch the updated record
                         select_url = f"{self.rest_url}/titles"
                         response = await client.get(
                             select_url,
                             headers=self.headers,
-                            params={"id": f"eq.{title_id}", "select": "*"}
+                            params={"id":  f"eq.{title_id}", "select": "*"}
                         )
                         result = response.json()
                         existing_title = result[0] if result else None
                         
                         if existing_title:
-                            logger.info(f"✅ Fetched updated title: {title_id}")
+                            logger.info(f"✅ Fetched updated title:  {title_id}")
                         else:
                             logger.error(f"❌ Could not fetch title after update: {title_id}")
                             return None
-                else:
-                    # No title_id provided - check by aicinedb_film_id or slug
-                    # First, try by aicinedb_film_id
+                else: 
+                    # 🔥 YENİ: backend_job_id ile de ara
                     if job_id:
                         select_url = f"{self.rest_url}/titles"
                         response = await client.get(
                             select_url,
                             headers=self.headers,
-                            params={"aicinedb_film_id": f"eq.{job_id}", "select": "*"}
+                            params={"backend_job_id": f"eq.{job_id}", "select": "*"}  # 👈 YENİ
                         )
                         if response.status_code == 200:
-                            result = response.json()
+                            result = response. json()
                             if result and len(result) > 0:
                                 existing_title = result[0]
-                                logger.info(f"✓ Found existing title by aicinedb_film_id: {existing_title['id']}")
+                                logger. info(f"✓ Found existing title by backend_job_id: {existing_title['id']}")
                     
-                    # If not found, try by slug
+                    # Fallback: Try by slug
                     if not existing_title:
                         select_url = f"{self.rest_url}/titles"
                         response = await client.get(
@@ -633,11 +621,14 @@ class SupabaseSyncService:
                                 existing_title = result[0]
                                 logger.info(f"✓ Found existing title by slug: {existing_title['id']}")
                     
-                    # Step 2: UPDATE or INSERT
+                    # UPDATE or INSERT
                     if existing_title:
-                        # UPDATE existing record
                         title_id = existing_title['id']
                         logger.info(f"📝 Updating existing title: {title_id}")
+                        
+                        # 🔥 Slug ve aicinedb_film_id'yi update'den çıkar
+                        update_data = {k: v for k, v in title_record.items() 
+                                    if k not in ['slug', 'aicinedb_film_id']}
                         
                         update_url = f"{self.rest_url}/titles"
                         update_headers = {
@@ -646,24 +637,24 @@ class SupabaseSyncService:
                             "Content-Type": "application/json; charset=utf-8"
                         }
                         
-                        json_data = json.dumps(title_record, ensure_ascii=False)
+                        json_data = json.dumps(update_data, ensure_ascii=False)
                         
                         response = await client.patch(
                             update_url,
                             headers=update_headers,
-                            params={"id": f"eq.{title_id}"},
+                            params={"id":  f"eq.{title_id}"},
                             content=json_data.encode('utf-8')
                         )
                         response.raise_for_status()
                         result = response.json()
                         
                         if result and len(result) > 0:
-                            logger.info(f"✅ Updated title in Supabase: {title_id}")
+                            logger.info(f"✅ Updated title in Supabase:  {title_id}")
                             existing_title = result[0]
                         else:
                             logger.warning(f"⚠️ Update returned no data, using existing title_id: {title_id}")
-                            existing_title = {'id': title_id, **title_record}
-                    else:
+                            existing_title = {'id': title_id, **update_data}
+                    else: 
                         # INSERT new record
                         logger.info(f"✨ Creating new title")
                         
@@ -671,7 +662,7 @@ class SupabaseSyncService:
                         insert_headers = {
                             **self.headers,
                             "Prefer": "return=representation",
-                            "Content-Type": "application/json; charset=utf-8"
+                            "Content-Type":  "application/json; charset=utf-8"
                         }
                         
                         json_data = json.dumps(title_record, ensure_ascii=False)
@@ -688,11 +679,11 @@ class SupabaseSyncService:
                             existing_title = result[0]
                             title_id = existing_title['id']
                             logger.info(f"✅ Created new title in Supabase: {title_id}")
-                        else:
+                        else: 
                             logger.error(f"❌ Insert failed, no data returned")
                             return None
                 
-                # Step 3: Sync cast & crew
+                # Step 3:  Sync cast & crew
                 await self._sync_cast_crew(existing_title['id'], film_data)
                 
                 return existing_title
