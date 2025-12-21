@@ -165,7 +165,7 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
     async with get_task_db() as db:
         db_ops = DatabaseOperations(db)
         
-        # Fetch job data to get user_id for creator attribution
+        # Fetch job data to get user_id and title_id for creator attribution
         job_data = await db_ops.get_job(job_id)
         if not job_data:
             logger.error(f"❌ Job {job_id} not found in database")
@@ -176,6 +176,16 @@ async def _run_analysis(task_self, job_id: int, url: str, title_id: str = None):
             logger.info(f"👤 User ID from job: {user_id}")
         else:
             logger.warning("⚠️ No user_id found in job data - uploaded_by will not be set")
+        
+        # If title_id not provided as parameter, try to get it from job data
+        if not title_id:
+            title_id = job_data.get('title_id')
+            if title_id:
+                logger.info(f"📋 Retrieved title_id from job: {title_id}")
+            else:
+                logger.warning("⚠️ No title_id found - a new title will be created in Supabase")
+        else:
+            logger.info(f"📋 Using title_id from task parameter: {title_id}")
         
         await db_ops.update_job_status(
             job_id,
