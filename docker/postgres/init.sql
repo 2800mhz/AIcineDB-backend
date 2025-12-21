@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS analysis_jobs (
     url TEXT NOT NULL,
     film_id INTEGER REFERENCES films(id) ON DELETE CASCADE,
     user_id TEXT,  -- UUID of uploader from Supabase profiles table
+    title_id TEXT,  -- UUID of title in Supabase (from frontend upload or backend creation)
     
     status VARCHAR(50) DEFAULT 'pending',
     progress FLOAT DEFAULT 0.0,
@@ -196,6 +197,7 @@ CREATE TABLE IF NOT EXISTS film_cast (
 CREATE INDEX idx_films_url ON films(url);
 CREATE INDEX idx_jobs_status ON analysis_jobs(status);
 CREATE INDEX idx_jobs_created ON analysis_jobs(created_at DESC);
+CREATE INDEX idx_jobs_title_id ON analysis_jobs(title_id);
 CREATE INDEX idx_shots_film ON shots(film_id);
 CREATE INDEX idx_characters_film ON characters(film_id);
 CREATE INDEX idx_film_frames_film_id ON film_frames(film_id);
