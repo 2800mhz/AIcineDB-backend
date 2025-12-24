@@ -101,11 +101,17 @@ Return only the numeric score (0-100), no explanation."""
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
-                max_tokens=10
+                max_tokens=50  # Increased to handle longer responses
             )
             
             score_text = response.choices[0].message.content.strip()
-            score = int(score_text)
+            # Extract first number from response
+            import re
+            match = re.search(r'\d+', score_text)
+            if not match:
+                logger.warning(f"Could not parse score from: {score_text}")
+                return 50
+            score = int(match.group())
             return max(0, min(100, score))  # Clamp to 0-100
             
         except Exception as e:
@@ -154,12 +160,19 @@ Return only the numeric score (0-100), no explanation."""
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.3,
-                    max_tokens=10
+                    max_tokens=50  # Increased to handle longer responses
                 )
                 
                 score_text = response.choices[0].message.content.strip()
-                relevance_score = int(score_text)
-                relevance_score = max(0, min(100, relevance_score))
+                # Extract first number from response
+                import re
+                match = re.search(r'\d+', score_text)
+                if not match:
+                    logger.warning(f"Could not parse relevance score from: {score_text}")
+                    relevance_score = 50
+                else:
+                    relevance_score = int(match.group())
+                    relevance_score = max(0, min(100, relevance_score))
                 
                 # Add scores to festival
                 festival['ai_relevance_score'] = relevance_score
@@ -234,12 +247,19 @@ Return only the numeric score (0-100), no explanation."""
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.3,
-                    max_tokens=10
+                    max_tokens=50  # Increased to handle longer responses
                 )
                 
                 score_text = response.choices[0].message.content.strip()
-                relevance_score = int(score_text)
-                relevance_score = max(0, min(100, relevance_score))
+                # Extract first number from response
+                import re
+                match = re.search(r'\d+', score_text)
+                if not match:
+                    logger.warning(f"Could not parse relevance score from: {score_text}")
+                    relevance_score = 50
+                else:
+                    relevance_score = int(match.group())
+                    relevance_score = max(0, min(100, relevance_score))
                 
                 # Add scores to article
                 article['ai_relevance_score'] = relevance_score

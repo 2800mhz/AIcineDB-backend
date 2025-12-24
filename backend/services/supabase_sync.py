@@ -1100,12 +1100,14 @@ class SupabaseSyncService:
                     headers=self.headers,
                     params={"id": f"eq.{discovered_id}", "select": "*"}
                 )
+                response.raise_for_status()
                 
-                if not response.json():
+                result = response.json()
+                if not result:
                     logger.error(f"Discovered festival not found: {discovered_id}")
                     return None
                 
-                discovered = response.json()[0]
+                discovered = result[0]
                 
                 # Create festival in main table
                 festival_data = {

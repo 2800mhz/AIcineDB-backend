@@ -283,6 +283,13 @@ async def approve_discovered_festival(
             
             # Update status to rejected
             async with httpx.AsyncClient(timeout=30.0) as client:
+                # Get user ID safely
+                user_id = None
+                if hasattr(user, 'id'):
+                    user_id = user.id
+                elif hasattr(user, 'user') and hasattr(user.user, 'id'):
+                    user_id = user.user.id
+                
                 response = await client.patch(
                     f"{supabase_service.rest_url}/discovered_festivals",
                     headers=supabase_service.headers,
@@ -291,7 +298,7 @@ async def approve_discovered_festival(
                         "status": "rejected",
                         "rejection_reason": approval.rejection_reason,
                         "reviewed_at": datetime.now().isoformat(),
-                        "reviewed_by": user.id if hasattr(user, 'id') else None
+                        "reviewed_by": user_id
                     }
                 )
                 response.raise_for_status()
