@@ -939,6 +939,250 @@ class SupabaseSyncService:
         
         logger.info(f"✅ Successfully uploaded {uploaded_count}/{len(keyframe_files)} keyframes")
         return uploaded_count
+    
+    async def sync_discovered_festival(self, festival: Dict) -> Optional[str]:
+        """
+        Save discovered festival to Supabase
+        
+        Args:
+            festival: Festival dictionary with scraped data
+            
+        Returns:
+            Festival ID if successful, None otherwise
+        """
+        if not self.enabled:
+            logger.debug("Supabase sync disabled, skipping discovered festival sync")
+            return None
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                insert_url = f"{self.rest_url}/discovered_festivals"
+                
+                # Prepare festival data
+                festival_data = {
+                    "name": festival.get("name"),
+                    "external_url": festival.get("external_url"),
+                    "description": festival.get("description"),
+                    "start_date": festival.get("start_date"),
+                    "end_date": festival.get("end_date"),
+                    "submission_deadline": festival.get("submission_deadline"),
+                    "location": festival.get("location"),
+                    "country": festival.get("country"),
+                    "category": festival.get("category", []),
+                    "genres": festival.get("genres", []),
+                    "entry_fee": festival.get("entry_fee"),
+                    "currency": festival.get("currency"),
+                    "ai_relevance_score": festival.get("ai_relevance_score"),
+                    "is_ai_film_friendly": festival.get("is_ai_film_friendly"),
+                    "prestige_score": festival.get("prestige_score"),
+                    "source": festival.get("source"),
+                    "source_url": festival.get("source_url"),
+                    "status": "pending"
+                }
+                
+                # Add embedding if available
+                if "embedding" in festival:
+                    festival_data["embedding"] = festival["embedding"]
+                
+                # Remove None values
+                festival_data = {k: v for k, v in festival_data.items() if v is not None}
+                
+                response = await client.post(
+                    insert_url,
+                    headers=self.headers,
+                    json=festival_data
+                )
+                response.raise_for_status()
+                result = response.json()
+                
+                if result and len(result) > 0:
+                    festival_id = result[0].get('id')
+                    logger.info(f"✅ Saved discovered festival: {festival.get('name')} ({festival_id})")
+                    return festival_id
+                
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to sync discovered festival: {e}")
+            return None
+    
+    async def sync_news_article(self, article: Dict) -> Optional[str]:
+        """
+        Save news article to Supabase
+        
+        Args:
+            article: Article dictionary with aggregated data
+            
+        Returns:
+            Article ID if successful, None otherwise
+        """
+        if not self.enabled:
+            logger.debug("Supabase sync disabled, skipping news article sync")
+            return None
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Check if article already exists by URL
+                select_url = f"{self.rest_url}/news_articles"
+                response = await client.get(
+                    select_url,
+                    headers=self.headers,
+                    params={"external_url": f"eq.{article.get('external_url')}", "select": "id"}
+                )
+                
+                if response.status_code == 200 and response.json():
+                    logger.debug(f"Article already exists: {article.get('title')}")
+                    return response.json()[0].get('id')
+                
+                # Insert new article
+                insert_url = f"{self.rest_url}/news_articles"
+                
+                article_data = {
+                    "title": article.get("title"),
+                    "summary": article.get("summary"),
+                    "external_url": article.get("external_url"),
+                    "image_url": article.get("image_url"),
+                    "author": article.get("author"),
+                    "source_name": article.get("source_name"),
+                    "category": article.get("category", []),
+                    "tags": article.get("tags", []),
+                    "ai_relevance_score": article.get("ai_relevance_score"),
+                    "is_ai_cinema_relevant": article.get("is_ai_cinema_relevant"),
+                    "published_at": article.get("published_at"),
+                }
+                
+                # Add embedding if available
+                if "embedding" in article:
+                    article_data["embedding"] = article["embedding"]
+                
+                # Remove None values
+                article_data = {k: v for k, v in article_data.items() if v is not None}
+                
+                response = await client.post(
+                    insert_url,
+                    headers=self.headers,
+                    json=article_data
+                )
+                response.raise_for_status()
+                result = response.json()
+                
+                if result and len(result) > 0:
+                    article_id = result[0].get('id')
+                    logger.info(f"✅ Saved news article: {article.get('title')} ({article_id})")
+                    return article_id
+                
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to sync news article: {e}")
+            return None
+    
+    async def approve_festival(self, discovered_id: str) -> Optional[str]:
+        """
+        Move festival from discovered_festivals to festivals table
+        
+        Args:
+            discovered_id: UUID of discovered festival
+            
+        Returns:
+            New festival ID if successful, None otherwise
+        """
+        if not self.enabled:
+            logger.debug("Supabase sync disabled, skipping festival approval")
+            return None
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Get discovered festival
+                select_url = f"{self.rest_url}/discovered_festivals"
+                response = await client.get(
+                    select_url,
+                    headers=self.headers,
+                    params={"id": f"eq.{discovered_id}", "select": "*"}
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                if not result:
+                    logger.error(f"Discovered festival not found: {discovered_id}")
+                    return None
+                
+                discovered = result[0]
+                
+                # Create festival in main table
+                festival_data = {
+                    "name": discovered.get("name"),
+                    "slug": self._generate_slug(discovered.get("name")),
+                    "description": discovered.get("description"),
+                    "start_date": discovered.get("start_date"),
+                    "end_date": discovered.get("end_date"),
+                    "submission_end_date": discovered.get("submission_deadline"),
+                    "location": discovered.get("location"),
+                    "categories": discovered.get("category", []),
+                    "genres": discovered.get("genres", []),
+                    "entry_fee": discovered.get("entry_fee"),
+                    "website": discovered.get("external_url"),
+                    "status": "approved",
+                    "is_creator_festival": False,
+                    "created_by": "00000000-0000-0000-0000-000000000000"  # System user
+                }
+                
+                insert_url = f"{self.rest_url}/festivals"
+                response = await client.post(
+                    insert_url,
+                    headers=self.headers,
+                    json=festival_data
+                )
+                response.raise_for_status()
+                result = response.json()
+                
+                if result and len(result) > 0:
+                    festival_id = result[0].get('id')
+                    
+                    # Update discovered festival status
+                    update_url = f"{self.rest_url}/discovered_festivals"
+                    await client.patch(
+                        update_url,
+                        headers=self.headers,
+                        params={"id": f"eq.{discovered_id}"},
+                        json={
+                            "status": "approved",
+                            "approved_festival_id": festival_id
+                        }
+                    )
+                    
+                    logger.info(f"✅ Approved festival: {discovered.get('name')} ({festival_id})")
+                    return festival_id
+                
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to approve festival: {e}")
+            return None
+    
+    async def find_duplicate_festivals(self, festival_id: str, threshold: float = 0.95) -> List[Dict]:
+        """
+        Find similar festivals using vector similarity
+        
+        Args:
+            festival_id: UUID of festival to compare
+            threshold: Similarity threshold (0-1)
+            
+        Returns:
+            List of similar festivals
+        """
+        if not self.enabled:
+            return []
+        
+        try:
+            # This would use pgvector's similarity search in production
+            # For now, return empty list as placeholder
+            logger.info(f"🔍 Finding duplicates for festival {festival_id}")
+            return []
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to find duplicate festivals: {e}")
+            return []
 
 
 # ✅ YENİ: Singleton instance ve helper fonksiyon

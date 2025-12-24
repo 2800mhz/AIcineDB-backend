@@ -27,6 +27,7 @@ from backend.models.schemas import (
 )
 from backend.api.festivals import router as festivals_router
 from backend.api.upload import router as upload_router
+from backend.api.content import router as content_router
 
 # Configure logging
 logging.basicConfig(
@@ -64,8 +65,10 @@ app.add_middleware(
 # Include routers
 app.include_router(festivals_router, prefix="/api", tags=["festivals"])
 app.include_router(upload_router, tags=["upload"])
+app.include_router(content_router, prefix="/api", tags=["content"])
 
 logger.info("✅ Upload router registered at /api/upload")
+logger.info("✅ Content router registered at /api/content")
 
 
 # ============================================================================
