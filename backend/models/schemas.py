@@ -1,7 +1,7 @@
 """
 Pydantic Models for API Request/Response Schemas - FIXED
 """
-from pydantic import BaseModel, HttpUrl, Field, validator
+from pydantic import BaseModel, HttpUrl, Field, validator, UUID4
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime
 from enum import Enum
@@ -318,6 +318,17 @@ class FestivalStatus(str, Enum):
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
+    DUPLICATE = "duplicate"  # Yeni eklenen durum
+
+class ScrapingJobType(str, Enum):
+    FESTIVALS = "festivals"
+    NEWS = "news"
+
+class ScrapingJobStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
     CANCELLED = "cancelled"
 
 
@@ -517,228 +528,195 @@ class FestivalEventCreate(BaseModel):
 
 
 # ============================================================================
-# CONTENT AGGREGATION MODELS
+# SCRAPING JOBS
+# ============================================================================
+
+class ScrapingJobResponse(BaseModel):
+    """Response model for scraping job"""
+    id: UUID4
+    job_type: ScrapingJobType
+    status: ScrapingJobStatus
+    source_id: Optional[UUID4] = None
+    source_name: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    duration_seconds: Optional[int] = None
+    items_found: int = 0
+    items_saved: int = 0
+    items_updated: int = 0
+    items_skipped: int = 0
+    error_message: Optional[str] = None
+    retry_count: int = 0
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    celery_task_id: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+        use_enum_values = True
+
+class ScrapingJobCreate(BaseModel):
+    """Create a new scraping job"""
+    job_type: ScrapingJobType
+    source_id: Optional[UUID4] = None
+    source_name: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+# ============================================================================
+# DISCOVERED FESTIVALS
 # ============================================================================
 
 class DiscoveredFestivalResponse(BaseModel):
-    """Model for discovered festival response"""
-    id: str
+    """Response model for discovered festival"""
+    id: UUID4
+    source_id: Optional[UUID4] = None
     name: str
-    external_url: Optional[str] = None
+    external_url: str
     description: Optional[str] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     submission_deadline: Optional[datetime] = None
     location: Optional[str] = None
     country: Optional[str] = None
-    category: List[str] = []
-    genres: List[str] = []
-    entry_fee: Optional[float] = None
-    currency: Optional[str] = None
-    ai_relevance_score: Optional[int] = None
+    category: Optional[List[str]] = None
+    genres: Optional[List[str]] = None
     is_ai_film_friendly: bool = False
-    prestige_score: Optional[int] = None
-    source: Optional[str] = None
-    status: str = "pending"
+    prestige_score: Optional[int] = Field(None, ge=0, le=100)
+    ai_relevance_score: Optional[int] = Field(None, ge=0, le=100)
+    status: FestivalStatus
+    duplicate_of: Optional[UUID4] = None
+    reviewed_by: Optional[UUID4] = None
+    reviewed_at: Optional[datetime] = None
+    admin_notes: Optional[str] = None
     created_at: datetime
+    updated_at: datetime
     
     class Config:
-        schema_extra = {
-            "example": {
-                "id": "550e8400-e29b-41d4-a716-446655440000",
-                "name": "AI Cinema Festival 2024",
-                "external_url": "https://example.com/festival",
-                "description": "Festival celebrating AI-generated films",
-                "location": "San Francisco, USA",
-                "ai_relevance_score": 85,
-                "is_ai_film_friendly": True,
-                "prestige_score": 65,
-                "status": "pending"
-            }
-        }
-
+        from_attributes = True
+        use_enum_values = True
 
 class DiscoveredFestivalApproval(BaseModel):
-    """Model for approving/rejecting discovered festivals"""
-    action: str = Field(..., description="'approve' or 'reject'")
-    rejection_reason: Optional[str] = Field(None, description="Required if action is 'reject'")
+    """Approve or reject a discovered festival"""
+    action: str = Field(..., pattern="^(approve|reject)$")
+    rejection_reason: Optional[str] = None
+    admin_notes: Optional[str] = None
+
+
+# ============================================================================
+# NEWS SOURCES
+# ============================================================================
+
+class NewsSourceResponse(BaseModel):
+    """Response model for news source"""
+    id: UUID4
+    name: str
+    source_type: str
+    url: str
+    fetch_interval: int = 3600
+    is_active: bool = True
+    last_fetched_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    config: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
     
     class Config:
-        schema_extra = {
+        from_attributes = True
+
+class NewsSourceCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    source_type: str = Field(..., pattern="^(rss|api|scraper)$")
+    url: str
+    fetch_interval: int = Field(default=3600, ge=60, le=604800)
+    is_active: bool = Field(default=True)
+    config: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    
+    @validator('config', pre=True, always=True)
+    def ensure_config(cls, v):
+        return v if v is not None else {}
+    
+    class Config:
+        json_schema_extra = {
             "example": {
-                "action": "approve"
+                "name": "Variety RSS",
+                "source_type": "rss",
+                "url": "https://variety.com/feed/",
+                "fetch_interval": 3600,
+                "is_active": True,
+                "config": {}
             }
         }
 
 
+# ============================================================================
+# FESTIVAL SOURCES
+# ============================================================================
+
+class FestivalSourceResponse(BaseModel):
+    """Response model for festival source"""
+    id: UUID4
+    name: str
+    source_type: str
+    url: Optional[str] = None
+    fetch_interval: int = 86400
+    is_active: bool = True
+    last_fetched_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    config: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class FestivalSourceCreate(BaseModel):
+    """Create a new festival source"""
+    name: str = Field(..., min_length=1, max_length=200)
+    source_type: str = Field(..., pattern="^(filmfreeway|withoutabox|festhome|scraper|manual)$")
+    url: Optional[HttpUrl] = None
+    fetch_interval: int = Field(86400, ge=3600, le=604800)
+    is_active: bool = True
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+
+# ============================================================================
+# NEWS ARTICLES
+# ============================================================================
+
 class NewsArticleResponse(BaseModel):
-    """Model for news article response"""
-    id: str
+    """Response model for news article"""
+    id: UUID4
+    source_id: Optional[UUID4] = None
     title: str
+    slug: Optional[str] = None
     summary: Optional[str] = None
+    content: Optional[str] = None
     external_url: str
     image_url: Optional[str] = None
     author: Optional[str] = None
-    source_name: Optional[str] = None
-    category: List[str] = []
-    tags: List[str] = []
-    ai_relevance_score: Optional[int] = None
-    is_ai_cinema_relevant: bool = False
     published_at: Optional[datetime] = None
-    is_archived: bool = False
+    category: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+    language: str = "en"
+    view_count: int = 0
+    is_featured: bool = False
+    is_ai_curated: bool = False
+    ai_relevance_score: Optional[int] = Field(None, ge=0, le=100)
     created_at: datetime
+    updated_at: datetime
     
     class Config:
-        schema_extra = {
-            "example": {
-                "id": "550e8400-e29b-41d4-a716-446655440000",
-                "title": "AI-Generated Films Take Cannes by Storm",
-                "summary": "This year's festival features unprecedented AI content...",
-                "external_url": "https://variety.com/article",
-                "image_url": "https://example.com/image.jpg",
-                "source_name": "Variety",
-                "ai_relevance_score": 92,
-                "is_ai_cinema_relevant": True,
-                "category": ["festivals", "technology"],
-                "tags": ["ai", "cannes", "filmmaking"]
-            }
-        }
+        from_attributes = True
 
 
-class NewsSourceResponse(BaseModel):
-    """Model for news source response"""
-    id: str
-    name: str
-    url: str
-    source_type: str = "rss"
-    is_active: bool = True
-    fetch_interval_hours: int = 6
-    last_fetched_at: Optional[datetime] = None
-    total_articles_fetched: int = 0
-    created_at: datetime
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "id": "550e8400-e29b-41d4-a716-446655440000",
-                "name": "Variety",
-                "url": "https://variety.com/feed/",
-                "source_type": "rss",
-                "is_active": True,
-                "total_articles_fetched": 1250
-            }
-        }
-
-
-class NewsSourceCreate(BaseModel):
-    """Model for creating a news source"""
-    name: str = Field(..., min_length=1, max_length=255)
-    url: str = Field(..., min_length=1)
-    source_type: str = Field(default="rss", description="'rss', 'api', or 'scraper'")
-    is_active: bool = True
-    fetch_interval_hours: int = Field(default=6, ge=1, le=168)
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "name": "Custom Film Blog",
-                "url": "https://example.com/feed.xml",
-                "source_type": "rss",
-                "is_active": True,
-                "fetch_interval_hours": 12
-            }
-        }
-
-
-class FestivalSourceResponse(BaseModel):
-    """Model for festival source response"""
-    id: str
-    name: str
-    url: str
-    source_type: str = "scraper"
-    is_active: bool = True
-    scrape_interval_hours: int = 24
-    last_scraped_at: Optional[datetime] = None
-    total_festivals_found: int = 0
-    created_at: datetime
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "id": "550e8400-e29b-41d4-a716-446655440000",
-                "name": "FilmFreeway",
-                "url": "https://filmfreeway.com/festivals",
-                "source_type": "scraper",
-                "is_active": True,
-                "total_festivals_found": 450
-            }
-        }
-
-
-class FestivalSourceCreate(BaseModel):
-    """Model for creating a festival source"""
-    name: str = Field(..., min_length=1, max_length=255)
-    url: str = Field(..., min_length=1)
-    source_type: str = Field(default="scraper", description="'scraper', 'rss', or 'api'")
-    is_active: bool = True
-    scrape_interval_hours: int = Field(default=24, ge=1, le=168)
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "name": "Custom Festival Directory",
-                "url": "https://example.com/festivals",
-                "source_type": "scraper",
-                "is_active": True,
-                "scrape_interval_hours": 48
-            }
-        }
-
-
-class ScrapingJobResponse(BaseModel):
-    """Model for scraping job response"""
-    id: str
-    job_type: str
-    source: Optional[str] = None
-    status: str
-    items_found: int = 0
-    items_new: int = 0
-    items_updated: int = 0
-    items_duplicates: int = 0
-    items_filtered: int = 0
-    error_message: Optional[str] = None
-    duration_seconds: Optional[int] = None
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    created_at: datetime
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "id": "550e8400-e29b-41d4-a716-446655440000",
-                "job_type": "festivals",
-                "source": "all",
-                "status": "completed",
-                "items_found": 150,
-                "items_new": 42,
-                "items_duplicates": 18,
-                "items_filtered": 90,
-                "duration_seconds": 245,
-                "started_at": "2024-01-20T03:00:00Z",
-                "completed_at": "2024-01-20T03:04:05Z"
-            }
-        }
-
+# ============================================================================
+# MANUAL TRIGGER
+# ============================================================================
 
 class ManualTriggerResponse(BaseModel):
-    """Response for manually triggered tasks"""
+    """Response when manually triggering a background task"""
     task_id: str
     message: str
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "task_id": "abc123-def456",
-                "message": "Festival scraping task started"
-            }
-        }
+    job_id: Optional[UUID4] = None

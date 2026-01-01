@@ -28,24 +28,29 @@ class FestivalService:
     ) -> Dict[str, Any]:
         """
         Create a new festival
-        - Admins create approved festivals directly
-        - Creators create pending festivals (requires approval)
+        - Admins create active festivals directly
+        - Creators create draft festivals (requires approval)
         """
         festival_id = str(uuid.uuid4())
         
+        # SQL Şemasına Uygunluk Düzeltmesi:
+        # DB sadece 'active', 'inactive', 'archived', 'draft' kabul eder.
+        # 'pending' yerine 'draft' kullanıyoruz.
+        status = "active" if is_admin else "draft"
+
         data = {
             "id": festival_id,
             "created_by": user_id,
-            "status": "approved" if is_admin else "pending",
-            "is_creator_festival": not is_admin,
             **festival_data,
+            "status": status, 
+            "is_creator_festival": not is_admin,
             "created_at": datetime.now().isoformat(),
         }
         
         response = self.supabase.table("festivals").insert(data).execute()
         
         if response.data:
-            logger.info(f"✅ Festival created: {festival_id} by {user_id}")
+            logger.info(f"✅ Festival created: {festival_id} by {user_id} (Status: {status})")
             return response.data[0]
         else:
             logger.error(f"❌ Failed to create festival")
@@ -86,24 +91,35 @@ class FestivalService:
         query = self.supabase.table("festivals").select("*")
         
         if status_filter == "active":
-            query = query.eq("status", "approved")\
+            # DÜZELTME: Sadece statüsü 'active' olanları getir.
+            # Tarih kontrolünü kaldırdık çünkü çoğu festivalin start_date'i NULL olabilir
+            # veya gelecekte olabilir. Onaylanmışsa görünmelidir.
+            query = query.eq("status", "active")
+            
+        elif status_filter == "running":
+            # YENİ: Eğer illa ki "Şu an devam edenleri" görmek istersen bu filtreyi kullan
+            query = query.eq("status", "active")\
                         .lte("start_date", datetime.now().isoformat())\
                         .gte("end_date", datetime.now().isoformat())
+                        
         elif status_filter == "upcoming":
-            query = query.eq("status", "approved")\
+            query = query.eq("status", "active")\
                         .gt("start_date", datetime.now().isoformat())
+                        
         elif status_filter == "past":
-            query = query.eq("status", "approved")\
+            query = query.eq("status", "active")\
                         .lt("end_date", datetime.now().isoformat())
+                        
         elif status_filter:
             query = query.eq("status", status_filter)
+            
         else:
-            # Default: only show approved festivals
-            query = query.eq("status", "approved")
+            # Default: Sadece onaylanmış (active) olanları göster
+            query = query.eq("status", "active")
         
         response = query.order("created_at", desc=True)\
-                       .range(skip, skip + limit - 1)\
-                       .execute()
+                        .range(skip, skip + limit - 1)\
+                        .execute()
         
         return response.data if response.data else []
     
@@ -207,10 +223,12 @@ class FestivalService:
             raise Exception("Application not found")
         
         # Create festival from application data
+        # Note: We pass is_admin=True here so it gets created as 'active', 
+        # since the admin explicitly approved it.
         festival = await self.create_festival(
             festival_data=application["festival_data"],
             user_id=application["user_id"],
-            is_admin=False  # It's a creator festival
+            is_admin=True 
         )
         
         # Update application status

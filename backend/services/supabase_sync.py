@@ -6,8 +6,9 @@ import os
 import re
 import json
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from datetime import datetime
+from uuid import UUID  # ✅ YENİ: UUID import eklendi
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -23,6 +24,23 @@ except ImportError:
     Client = None
 
 logger = logging.getLogger(__name__)
+
+
+# ✅ YENİ: UUID Serialization Helper Function
+def serialize_for_json(obj: Any) -> Any:
+    """
+    UUID ve diğer özel tipleri JSON-serializable hale getirir.
+    Nested dict/list'ler için de çalışır.
+    """
+    if isinstance(obj, UUID):
+        return str(obj)
+    elif isinstance(obj, dict):
+        return {key: serialize_for_json(value) for key, value in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [serialize_for_json(item) for item in obj]
+    elif isinstance(obj, datetime):
+        return obj.isoformat()
+    return obj
 
 
 class SupabaseSyncService:
@@ -562,6 +580,8 @@ class SupabaseSyncService:
                     
                     logger.info(f"✓ Removing slug and backend_job_id from update (preserving existing values)")  # 👈 YENİ
                     
+                    # ✅ FIX: UUID'leri string'e çevir
+                    update_data = serialize_for_json(update_data)
                     json_data = json.dumps(update_data, ensure_ascii=False)
                     
                     response = await client.patch(
@@ -637,6 +657,8 @@ class SupabaseSyncService:
                             "Content-Type": "application/json; charset=utf-8"
                         }
                         
+                        # ✅ FIX: UUID'leri string'e çevir
+                        update_data = serialize_for_json(update_data)
                         json_data = json.dumps(update_data, ensure_ascii=False)
                         
                         response = await client.patch(
@@ -665,6 +687,8 @@ class SupabaseSyncService:
                             "Content-Type":  "application/json; charset=utf-8"
                         }
                         
+                        # ✅ FIX: UUID'leri string'e çevir
+                        title_record = serialize_for_json(title_record)
                         json_data = json.dumps(title_record, ensure_ascii=False)
                         
                         response = await client.post(
@@ -940,152 +964,206 @@ class SupabaseSyncService:
         logger.info(f"✅ Successfully uploaded {uploaded_count}/{len(keyframe_files)} keyframes")
         return uploaded_count
     
-    async def sync_discovered_festival(self, festival: Dict) -> Optional[str]:
+    async def sync_discovered_festival(self, festival_data: dict) -> Optional[str]:
         """
-        Save discovered festival to Supabase
-        
-        Args:
-            festival: Festival dictionary with scraped data
-            
-        Returns:
-            Festival ID if successful, None otherwise
+        Festival'i discovered_festivals tablosuna UPSERT ile kaydet.
         """
         if not self.enabled:
-            logger.debug("Supabase sync disabled, skipping discovered festival sync")
+            return None
+        
+        import httpx
+        
+        external_url = festival_data.get('external_url')
+        if not external_url:
+            logger.warning("⚠️ Festival has no external_url, skipping")
             return None
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                insert_url = f"{self.rest_url}/discovered_festivals"
+                # 1. Mevcut kaydı kontrol et
+                check_response = await client.get(
+                    f"{self.rest_url}/discovered_festivals",
+                    headers=self.headers,
+                    params={
+                        "external_url": f"eq.{external_url}",
+                        "select": "id"
+                    }
+                )
                 
-                # Prepare festival data
-                festival_data = {
-                    "name": festival.get("name"),
-                    "external_url": festival.get("external_url"),
-                    "description": festival.get("description"),
-                    "start_date": festival.get("start_date"),
-                    "end_date": festival.get("end_date"),
-                    "submission_deadline": festival.get("submission_deadline"),
-                    "location": festival.get("location"),
-                    "country": festival.get("country"),
-                    "category": festival.get("category", []),
-                    "genres": festival.get("genres", []),
-                    "entry_fee": festival.get("entry_fee"),
-                    "currency": festival.get("currency"),
-                    "ai_relevance_score": festival.get("ai_relevance_score"),
-                    "is_ai_film_friendly": festival.get("is_ai_film_friendly"),
-                    "prestige_score": festival.get("prestige_score"),
-                    "source": festival.get("source"),
-                    "source_url": festival.get("source_url"),
-                    "status": "pending"
+                existing = check_response.json() if check_response.status_code == 200 else []
+                
+                # 2. Veriyi hazırla (DB şemasına uygun)
+                db_data = {
+                    "name": festival_data.get('name', 'Unknown Festival'),
+                    "external_url": external_url,
+                    "description": festival_data.get('description'),
+                    "location": festival_data.get('location'),
+                    "country": festival_data.get('country'),
+                    "submission_deadline": festival_data.get('submission_deadline'),
+                    
+                    # ✅ DÜZELTME: Doğru alan adları
+                    "is_ai_film_friendly": festival_data.get('is_ai_film_friendly', False),
+                    "prestige_score": festival_data.get('prestige_score', 30),
+                    "ai_relevance_score": festival_data.get('ai_score', 50),
+                    
+                    "status": "pending",
+                    "updated_at": datetime.now().isoformat()
                 }
                 
-                # Add embedding if available
-                if "embedding" in festival:
-                    festival_data["embedding"] = festival["embedding"]
+                # source_id varsa ekle
+                if festival_data.get('source_id'):
+                    db_data['source_id'] = festival_data.get('source_id')
                 
-                # Remove None values
-                festival_data = {k: v for k, v in festival_data.items() if v is not None}
-                
-                response = await client.post(
-                    insert_url,
-                    headers=self.headers,
-                    json=festival_data
-                )
-                response.raise_for_status()
-                result = response.json()
-                
-                if result and len(result) > 0:
-                    festival_id = result[0].get('id')
-                    logger.info(f"✅ Saved discovered festival: {festival.get('name')} ({festival_id})")
-                    return festival_id
-                
-                return None
-                
+                if existing and len(existing) > 0:
+                    # UPDATE
+                    festival_id = existing[0]['id']
+                    
+                    update_response = await client.patch(
+                        f"{self.rest_url}/discovered_festivals",
+                        headers=self.headers,
+                        params={"id": f"eq.{festival_id}"},
+                        json=db_data
+                    )
+                    
+                    if update_response.status_code in [200, 204]:
+                        logger.debug(f"🔄 Updated festival: {festival_data.get('name')}")
+                        return festival_id
+                    else:
+                        logger.warning(f"⚠️ Update failed: {update_response.text}")
+                        return None
+                else:
+                    # INSERT
+                    db_data['created_at'] = datetime.now().isoformat()
+                    
+                    insert_response = await client.post(
+                        f"{self.rest_url}/discovered_festivals",
+                        headers={**self.headers, "Prefer": "return=representation"},
+                        json=db_data
+                    )
+                    
+                    if insert_response.status_code in [200, 201]:
+                        result = insert_response.json()
+                        festival_id = result[0]['id'] if result else None
+                        logger.info(f"✅ Saved new festival: {festival_data.get('name')}")
+                        return festival_id
+                    else:
+                        logger.warning(f"⚠️ Insert failed: {insert_response.text}")
+                        return None
+                        
         except Exception as e:
-            logger.error(f"❌ Failed to sync discovered festival: {e}")
+            logger.error(f"❌ sync_discovered_festival error: {e}")
             return None
-    
+         
+# backend/services/supabase_sync.py -> sync_news_article fonksiyonu
+
     async def sync_news_article(self, article: Dict) -> Optional[str]:
         """
-        Save news article to Supabase
-        
-        Args:
-            article: Article dictionary with aggregated data
-            
-        Returns:
-            Article ID if successful, None otherwise
+        Save news article with SMART TAGGING
         """
         if not self.enabled:
-            logger.debug("Supabase sync disabled, skipping news article sync")
             return None
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # Check if article already exists by URL
+                # 1. Check existing
                 select_url = f"{self.rest_url}/news_articles"
                 response = await client.get(
                     select_url,
                     headers=self.headers,
                     params={"external_url": f"eq.{article.get('external_url')}", "select": "id"}
                 )
-                
                 if response.status_code == 200 and response.json():
-                    logger.debug(f"Article already exists: {article.get('title')}")
                     return response.json()[0].get('id')
                 
-                # Insert new article
-                insert_url = f"{self.rest_url}/news_articles"
+                # 2. Source ID bulma (Aynı mantık)
+                source_id = None
+                source_name = article.get("source_name") or article.get("source")
+                if source_name:
+                    try:
+                        src_resp = await client.get(
+                            f"{self.rest_url}/news_sources",
+                            headers=self.headers,
+                            params={"name": f"ilike.%{source_name}%", "select": "id"}
+                        )
+                        if src_resp.status_code == 200:
+                            data = src_resp.json()
+                            if data: source_id = data[0]['id']
+                    except: pass
+
+                # 3. AKILLI ETİKETLEME (YENİ KISIM) 🧠
+                # Başlık ve özeti birleştirip analiz edelim
+                full_text = (str(article.get('title')) + " " + str(article.get('summary'))).lower()
                 
+                categories = []
+                tags = []
+                
+                # Kategori Kuralları
+                if any(x in full_text for x in ['festival', 'sundance', 'cannes', 'berlinale', 'venice']):
+                    categories.append('Festivals')
+                    tags.append('Film Festival')
+                
+                if any(x in full_text for x in ['award', 'oscar', 'globe', 'bafta', 'nomination']):
+                    categories.append('Awards')
+                    tags.append('Awards Season')
+                    
+                if any(x in full_text for x in ['ai', 'artificial intelligence', 'tech', 'digital', 'software', 'vfx']):
+                    categories.append('Technology')
+                    tags.append('AI in Film')
+                    
+                if any(x in full_text for x in ['release', 'trailer', 'premiere', 'box office', 'opening']):
+                    categories.append('Releases')
+                
+                if any(x in full_text for x in ['interview', 'director', 'actor', 'cast', 'spoke to']):
+                    categories.append('Interviews')
+
+                # Eğer hiçbiri uymadıysa 'Industry' yap
+                if not categories:
+                    categories.append('Industry')
+
+                # 4. Insert payload
+                summary_text = article.get("summary", "")
+                if len(summary_text) > 3000: summary_text = summary_text[:2997] + "..."
+
                 article_data = {
                     "title": article.get("title"),
-                    "summary": article.get("summary"),
+                    "summary": summary_text,
                     "external_url": article.get("external_url"),
                     "image_url": article.get("image_url"),
                     "author": article.get("author"),
-                    "source_name": article.get("source_name"),
-                    "category": article.get("category", []),
-                    "tags": article.get("tags", []),
+                    "source_id": source_id,
+                    "category": categories,  # ✅ Otomatik kategoriler
+                    "tags": tags,            # ✅ Otomatik etiketler
                     "ai_relevance_score": article.get("ai_relevance_score"),
-                    "is_ai_cinema_relevant": article.get("is_ai_cinema_relevant"),
+                    "is_ai_curated": article.get("is_ai_cinema_relevant", False),
                     "published_at": article.get("published_at"),
                 }
                 
-                # Add embedding if available
-                if "embedding" in article:
-                    article_data["embedding"] = article["embedding"]
-                
-                # Remove None values
+                # Clean None values
                 article_data = {k: v for k, v in article_data.items() if v is not None}
                 
                 response = await client.post(
-                    insert_url,
+                    f"{self.rest_url}/news_articles",
                     headers=self.headers,
                     json=article_data
                 )
+                
                 response.raise_for_status()
                 result = response.json()
                 
-                if result and len(result) > 0:
-                    article_id = result[0].get('id')
-                    logger.info(f"✅ Saved news article: {article.get('title')} ({article_id})")
-                    return article_id
-                
+                if result:
+                    return result[0].get('id')
                 return None
                 
         except Exception as e:
-            logger.error(f"❌ Failed to sync news article: {e}")
+            logger.error(f"❌ Failed to sync news: {e}")
             return None
     
+# backend/services/supabase_sync.py dosyasındaki approve_festival fonksiyonu:
+
     async def approve_festival(self, discovered_id: str) -> Optional[str]:
         """
-        Move festival from discovered_festivals to festivals table
-        
-        Args:
-            discovered_id: UUID of discovered festival
-            
-        Returns:
-            New festival ID if successful, None otherwise
+        Move festival from discovered_festivals to festivals table.
+        Matches the exact schema of both tables.
         """
         if not self.enabled:
             logger.debug("Supabase sync disabled, skipping festival approval")
@@ -1093,71 +1171,136 @@ class SupabaseSyncService:
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # Get discovered festival
-                select_url = f"{self.rest_url}/discovered_festivals"
-                response = await client.get(
-                    select_url,
+                # 1. Get discovered festival
+                logger.info(f"📋 Fetching discovered festival: {discovered_id}")
+                
+                select_response = await client.get(
+                    f"{self.rest_url}/discovered_festivals",
                     headers=self.headers,
                     params={"id": f"eq.{discovered_id}", "select": "*"}
                 )
-                response.raise_for_status()
                 
-                result = response.json()
+                if select_response.status_code != 200:
+                    logger.error(f"❌ Failed to fetch discovered festival: {select_response.text}")
+                    return None
+                
+                result = select_response.json()
                 if not result:
-                    logger.error(f"Discovered festival not found: {discovered_id}")
+                    logger.error(f"❌ Discovered festival not found: {discovered_id}")
                     return None
                 
                 discovered = result[0]
+                festival_name = discovered.get('name', 'Unknown')
+                logger.info(f"✅ Found discovered festival: {festival_name}")
                 
-                # Create festival in main table
+                # 2. Prepare data for festivals table (EXACT SCHEMA MATCH)
                 festival_data = {
-                    "name": discovered.get("name"),
-                    "slug": self._generate_slug(discovered.get("name")),
+                    # Required fields
+                    "name": festival_name,
+                    "slug": self._generate_slug(festival_name),
+                    
+                    # Optional text fields
                     "description": discovered.get("description"),
+                    "external_url": discovered.get("external_url"),
+                    "location": discovered.get("location"),
+                    "country": discovered.get("country"),
+                    
+                    # Date fields
                     "start_date": discovered.get("start_date"),
                     "end_date": discovered.get("end_date"),
-                    "submission_end_date": discovered.get("submission_deadline"),
-                    "location": discovered.get("location"),
-                    "categories": discovered.get("category", []),
-                    "genres": discovered.get("genres", []),
-                    "entry_fee": discovered.get("entry_fee"),
-                    "website": discovered.get("external_url"),
-                    "status": "approved",
-                    "is_creator_festival": False,
-                    "created_by": "00000000-0000-0000-0000-000000000000"  # System user
+                    "submission_deadline": discovered.get("submission_deadline"),
+                    
+                    # Array fields
+                    "category": discovered.get("category") or [],
+                    "genres": discovered.get("genres") or [],
+                    
+                    # Boolean/Integer fields
+                    "is_ai_friendly": discovered.get("is_ai_film_friendly", False),
+                    "prestige_score": discovered.get("prestige_score", 50),
+                    
+                    # Status fields - CRITICAL!
+                    "status": "active",      # ✅ Must be 'active' to show
+                    "visibility": "public",  # ✅ Must be 'public' to show
+                    
+                    # Timestamps
+                    "created_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat()
                 }
                 
-                insert_url = f"{self.rest_url}/festivals"
-                response = await client.post(
-                    insert_url,
+                # Remove None values to use DB defaults
+                festival_data = {k: v for k, v in festival_data.items() if v is not None}
+                
+                logger.info(f"📝 Inserting festival to main table: {festival_name}")
+                logger.debug(f"Festival data: {festival_data}")
+                
+                # 3. Check if festival already exists (by external_url or slug)
+                existing_check = await client.get(
+                    f"{self.rest_url}/festivals",
                     headers=self.headers,
+                    params={
+                        "or": f"(external_url.eq.{discovered.get('external_url')},slug.eq.{festival_data['slug']})",
+                        "select": "id,name"
+                    }
+                )
+                
+                if existing_check.status_code == 200:
+                    existing = existing_check.json()
+                    if existing:
+                        logger.warning(f"⚠️ Festival already exists: {existing[0].get('name')} (ID: {existing[0].get('id')})")
+                        # Update discovered_festivals to mark as duplicate
+                        await client.patch(
+                            f"{self.rest_url}/discovered_festivals",
+                            headers=self.headers,
+                            params={"id": f"eq.{discovered_id}"},
+                            json={
+                                "status": "duplicate",
+                                "duplicate_of": existing[0].get('id'),
+                                "updated_at": datetime.now().isoformat()
+                            }
+                        )
+                        return existing[0].get('id')
+                
+                # 4. Insert into festivals table
+                insert_response = await client.post(
+                    f"{self.rest_url}/festivals",
+                    headers={**self.headers, "Prefer": "return=representation"},
                     json=festival_data
                 )
-                response.raise_for_status()
-                result = response.json()
                 
-                if result and len(result) > 0:
-                    festival_id = result[0].get('id')
-                    
-                    # Update discovered festival status
-                    update_url = f"{self.rest_url}/discovered_festivals"
-                    await client.patch(
-                        update_url,
-                        headers=self.headers,
-                        params={"id": f"eq.{discovered_id}"},
-                        json={
-                            "status": "approved",
-                            "approved_festival_id": festival_id
-                        }
-                    )
-                    
-                    logger.info(f"✅ Approved festival: {discovered.get('name')} ({festival_id})")
-                    return festival_id
+                if insert_response.status_code not in [200, 201]:
+                    logger.error(f"❌ Failed to insert festival: {insert_response.status_code}")
+                    logger.error(f"Response: {insert_response.text}")
+                    return None
                 
-                return None
+                insert_result = insert_response.json()
+                
+                if not insert_result or len(insert_result) == 0:
+                    logger.error("❌ Insert returned empty result")
+                    return None
+                
+                festival_id = insert_result[0].get('id')
+                logger.info(f"✅ Festival inserted with ID: {festival_id}")
+                
+                # 5. Update discovered_festivals status to 'approved'
+                update_response = await client.patch(
+                    f"{self.rest_url}/discovered_festivals",
+                    headers=self.headers,
+                    params={"id": f"eq.{discovered_id}"},
+                    json={
+                        "status": "approved",
+                        "reviewed_at": datetime.now().isoformat(),
+                        "updated_at": datetime.now().isoformat()
+                    }
+                )
+                
+                if update_response.status_code not in [200, 204]:
+                    logger.warning(f"⚠️ Failed to update discovered festival status: {update_response.text}")
+                
+                logger.info(f"🎉 Successfully approved: {festival_name} → ID: {festival_id}")
+                return festival_id
                 
         except Exception as e:
-            logger.error(f"❌ Failed to approve festival: {e}")
+            logger.error(f"❌ Failed to approve festival: {e}", exc_info=True)
             return None
     
     async def find_duplicate_festivals(self, festival_id: str, threshold: float = 0.95) -> List[Dict]:

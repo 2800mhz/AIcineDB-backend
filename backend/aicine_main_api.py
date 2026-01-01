@@ -131,13 +131,13 @@ async def root():
         "version": "2.0.0",
         "description": "Professional film analysis platform",
         "features": [
-            "🎬 Cinematography analysis (shots, lighting, color)",
-            "📖 Narrative breakdown with Gemini AI",
-            "🎭 Character tracking & emotion detection",
-            "🎵 Audio mood & pacing analysis",
-            "🎨 Visual style classification",
-            "🔍 Vector-based similarity search",
-            "📊 Complete reports (JSON, HTML, TXT)"
+            "Cinematography analysis (shots, lighting, color)",
+            "Narrative breakdown with Gemini AI",
+            "Character tracking & emotion detection",
+            "Audio mood & pacing analysis",
+            "Visual style classification",
+            "Vector-based similarity search",
+            "Complete reports (JSON, HTML, TXT)"
         ],
         "endpoints": {
             "POST /api/analyze": "Submit video for analysis",
@@ -714,16 +714,6 @@ async def admin_upload_photo(
     except Exception as e:
         logger. error(f"Upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "aicine_main_api:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True
-    )
-
 # ============================================================
 # AI BANNER GENERATION
 # ============================================================
@@ -824,3 +814,249 @@ async def update_user_banner(
     except Exception as e:
         logger.error(f"❌ Failed to update banner: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+# ============================================================
+# CONTENT AGGREGATION ENDPOINTS
+# ============================================================
+
+@app.get("/api/content/scraping-jobs")
+async def list_scraping_jobs(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100)
+):
+    """List scraping job history"""
+    try:
+        from backend.services.supabase_sync import SupabaseSyncService
+        sync = SupabaseSyncService()
+        
+        # sync.enabled kontrolü (hata almamak için opsiyonel, servisinde varsa kalsın)
+        # if not getattr(sync, 'enabled', True): return [] 
+        
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{sync.rest_url}/scraping_jobs",
+                headers=sync.headers,
+                params={
+                    "order": "created_at.desc",
+                    "limit": limit,
+                    "offset": skip
+                }
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.warning(f"Failed to fetch scraping jobs: {response.status_code}")
+                return []
+                
+    except Exception as e:
+        logger.error(f"Error fetching scraping jobs: {e}")
+        return []
+
+@app.get("/api/content/sources/news")
+async def list_news_sources():
+    """List news sources"""
+    try:
+        from backend.services.supabase_sync import SupabaseSyncService
+        sync = SupabaseSyncService()
+        
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{sync.rest_url}/news_sources",
+                headers=sync.headers,
+                params={"order": "name.asc"}
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return []
+                
+    except Exception as e:
+        logger.error(f"Error fetching news sources: {e}")
+        return []
+@app.get("/api/content/festivals/discovered")
+async def list_discovered_festivals(
+    status: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100)
+):
+    """List discovered festivals"""
+    try:
+        from backend.services.supabase_sync import SupabaseSyncService
+        sync = SupabaseSyncService()
+        
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            params = {
+                "order": "created_at.desc",
+                "limit": limit,
+                "offset": skip
+            }
+            
+            if status:
+                params["status"] = f"eq.{status}"
+            
+            response = await client.get(
+                f"{sync.rest_url}/discovered_festivals",
+                headers=sync.headers,
+                params=params
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.warning(f"Failed to fetch festivals: {response.status_code}")
+                return []
+                
+    except Exception as e:
+        logger.error(f"Error fetching discovered festivals: {e}")
+        return []
+    
+# ============================================================
+# CONTENT SOURCES - CRUD ENDPOINTS
+# ============================================================
+
+@app.post("/api/content/sources/news")
+async def create_news_source(source_data: dict):
+    """Create a new news source"""
+    try:
+        from backend.services.supabase_sync import SupabaseSyncService
+        sync = SupabaseSyncService()
+        
+        response = sync.supabase.table('news_sources').insert(source_data).execute()
+        
+        if response.data:
+            logger.info(f"✅ Created news source: {source_data.get('name')}")
+            return response.data[0]
+        else:
+            raise HTTPException(status_code=400, detail="Failed to create source")
+            
+    except Exception as e:
+        logger.error(f"Failed to create news source: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/content/sources/news/{source_id}")
+async def update_news_source(source_id: str, source_data: dict):
+    """Update a news source"""
+    try:
+        from backend.services.supabase_sync import SupabaseSyncService
+        sync = SupabaseSyncService()
+        
+        response = sync.supabase.table('news_sources').update(source_data).eq('id', source_id).execute()
+        
+        if response.data:
+            return response.data[0]
+        else:
+            raise HTTPException(status_code=404, detail="Source not found")
+            
+    except Exception as e:
+        logger.error(f"Failed to update news source: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/content/sources/news/{source_id}")
+async def delete_news_source(source_id: str):
+    """Delete a news source"""
+    try:
+        from backend.services.supabase_sync import SupabaseSyncService
+        sync = SupabaseSyncService()
+        
+        sync.supabase.table('news_sources').delete().eq('id', source_id).execute()
+        return {"success": True, "message": "Source deleted"}
+        
+    except Exception as e:
+        logger.error(f"Failed to delete news source: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# FESTIVALS - CRUD ENDPOINTS  
+# ============================================================
+
+@app.post("/api/content/festivals/discovered")
+async def create_discovered_festival(festival_data: dict):
+    """Create a discovered festival"""
+    try:
+        from backend.services.supabase_sync import SupabaseSyncService
+        sync = SupabaseSyncService()
+        
+        response = sync.supabase.table('discovered_festivals').insert(festival_data).execute()
+        
+        if response.data:
+            return response.data[0]
+        else:
+            raise HTTPException(status_code=400, detail="Failed to create festival")
+            
+    except Exception as e:
+        logger.error(f"Failed to create festival: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/content/festivals/discovered/{festival_id}")
+async def update_discovered_festival(festival_id: str, festival_data: dict):
+    """Update a discovered festival"""
+    try:
+        from backend.services.supabase_sync import SupabaseSyncService
+        sync = SupabaseSyncService()
+        
+        response = sync.supabase.table('discovered_festivals').update(festival_data).eq('id', festival_id).execute()
+        
+        if response.data:
+            return response.data[0]
+        else:
+            raise HTTPException(status_code=404, detail="Festival not found")
+            
+    except Exception as e:
+        logger.error(f"Failed to update festival: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/content/festivals/discovered/{festival_id}")
+async def delete_discovered_festival(festival_id: str):
+    """Delete a discovered festival"""
+    try:
+        from backend.services.supabase_sync import SupabaseSyncService
+        sync = SupabaseSyncService()
+        
+        sync.supabase.table('discovered_festivals').delete().eq('id', festival_id).execute()
+        return {"success": True, "message": "Festival deleted"}
+        
+    except Exception as e:
+        logger.error(f"Failed to delete festival: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# SCRAPING JOBS - CRUD ENDPOINTS
+# ============================================================
+
+@app.post("/api/content/scraping-jobs")
+async def create_scraping_job(job_data: dict):
+    """Create a scraping job"""
+    try:
+        from backend.services.supabase_sync import SupabaseSyncService
+        sync = SupabaseSyncService()
+        
+        response = sync.supabase.table('scraping_jobs').insert(job_data).execute()
+        
+        if response.data:
+            return response.data[0]
+        else:
+            raise HTTPException(status_code=400, detail="Failed to create job")
+            
+    except Exception as e:
+        logger.error(f"Failed to create scraping job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "aicine_main_api:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True
+    )

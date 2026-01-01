@@ -13,19 +13,34 @@ security = HTTPBearer()
 
 def get_admin_emails() -> List[str]:
     """Get list of admin emails from environment"""
-    # Single admin
+    admins = []
+    
+    # 1. Environment değişkenlerinden okumaya çalış (Varsa)
     single = os.getenv('ADMIN_EMAIL', '')
     if single:
-        return [single. strip().lower()]
+        admins.append(single.strip().lower())
     
-    # Multiple admins
     multiple = os.getenv('ADMIN_EMAILS', '')
     if multiple:
-        return [email.strip().lower() for email in multiple. split(',') if email.strip()]
+        admins.extend([email.strip().lower() for email in multiple.split(',') if email.strip()])
     
-    # Fallback (development only)
-    logger. warning("⚠️ No admin emails configured in environment")
-    return []
+    # 2. 👇 BURAYA KENDİ EMAİLİNİ MANUEL OLARAK EKLE (GÜVENLİ LİSTE)
+    # Frontend'de sağ üst köşede avatarına tıkladığında görünen maili tam olarak buraya yaz.
+    MY_ADMIN_EMAILS = [
+        "aicinedb@gmail.com",
+        "hamburg31cisi@gmail.com", 
+        "gcmsx@gmail.com", # Eğer kullanıcı adın buysa mailin farklı olabilir, kontrol et!
+        # Buraya kendi gerçek gmail adresini tırnak içinde ekle:
+        "senin.gercek.mailin@gmail.com" 
+    ]
+    
+    admins.extend([email.lower() for email in MY_ADMIN_EMAILS])
+    
+    if not admins:
+        logger.warning("⚠️ No admin emails configured in environment")
+        return []
+        
+    return list(set(admins)) # Tekrar edenleri temizle
 
 
 def is_admin_email(email: str) -> bool:

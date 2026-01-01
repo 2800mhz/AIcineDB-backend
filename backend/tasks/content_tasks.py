@@ -9,116 +9,168 @@ from celery import shared_task
 
 logger = logging.getLogger(__name__)
 
-
 @shared_task(name="scrape_festivals", bind=True)
-def scrape_festivals_task(self):
+def scrape_festivals_task(self, source_id=None):
     """
-    Run daily at 3 AM to scrape festivals from all sources
-    
-    Process:
-    1. Fetch from all sources (FilmFreeway, Festhome, RSS)
-    2. AI filter (relevance >= 60)
-    3. Generate embeddings
-    4. Detect duplicates
-    5. Save to discovered_festivals table
-    6. Update scraping_jobs table
+    Festival scraping task.
+    - source_id verilirse: Sadece o kaynağı çeker
+    - source_id verilmezse: Tüm aktif kaynakları çeker
     """
     import asyncio
+    import httpx
     from backend.services.festival_scraper import FestivalScraper
-    from backend.services.ai_filter import AIFilter
     from backend.services.supabase_sync import SupabaseSyncService
     
-    logger.info("🎬 Starting festival scraping task...")
+    target_name = f"Source {source_id}" if source_id else "ALL Sources"
+    logger.info(f"🎬 Starting festival scraping... (Target: {target_name})")
     
-    job_id = None
     start_time = datetime.now()
+    job_id = None
+    supabase = SupabaseSyncService()
     
     try:
-        # Create scraping job record
-        supabase_service = SupabaseSyncService()
-        
-        # Run async scraping
         async def run_scraping():
             nonlocal job_id
+            sources_to_scrape = []
             
-            # Create job record
-            if supabase_service.enabled:
-                import httpx
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.post(
-                        f"{supabase_service.rest_url}/scraping_jobs",
-                        headers=supabase_service.headers,
-                        json={
-                            "job_type": "festivals",
-                            "source": "all",
-                            "status": "running",
-                            "started_at": start_time.isoformat()
-                        }
-                    )
-                    if response.status_code in [200, 201]:
-                        result = response.json()
-                        if result and len(result) > 0:
-                            job_id = result[0].get('id')
+            if not supabase.enabled:
+                logger.warning("⚠️ Supabase not enabled!")
+                return {"items_found": 0, "status": "supabase_disabled"}
             
-            # 1. Scrape festivals
-            scraper = FestivalScraper()
-            festivals = await scraper.scrape_all_sources()
-            logger.info(f"📊 Found {len(festivals)} festivals")
-            
-            if not festivals:
-                return {
-                    "items_found": 0,
-                    "items_new": 0,
-                    "items_filtered": 0,
-                    "items_duplicates": 0
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # 1. Job kaydı oluştur
+                job_payload = {
+                    "job_type": "festivals",
+                    "status": "running",
+                    "started_at": start_time.isoformat()
                 }
-            
-            # 2. AI filter
-            ai_filter = AIFilter()
-            filtered_festivals = await ai_filter.filter_festivals(festivals)
-            logger.info(f"✓ {len(filtered_festivals)} festivals passed AI filter")
-            
-            # 3. Detect duplicates
-            unique_festivals = await ai_filter.detect_duplicates(filtered_festivals)
-            logger.info(f"✓ {len(unique_festivals)} unique festivals")
-            
-            # 4. Save to Supabase
-            saved_count = 0
-            for festival in unique_festivals:
-                festival_id = await supabase_service.sync_discovered_festival(festival)
-                if festival_id:
-                    saved_count += 1
-            
-            logger.info(f"✅ Saved {saved_count} festivals to database")
-            
-            return {
-                "items_found": len(festivals),
-                "items_new": saved_count,
-                "items_filtered": len(festivals) - len(filtered_festivals),
-                "items_duplicates": len(filtered_festivals) - len(unique_festivals)
-            }
+                if source_id:
+                    job_payload["source_id"] = source_id
+                
+                job_resp = await client.post(
+                    f"{supabase.rest_url}/scraping_jobs",
+                    headers={**supabase.headers, "Prefer": "return=representation"},
+                    json=job_payload
+                )
+                if job_resp.status_code in [200, 201]:
+                    job_id = job_resp.json()[0].get('id')
+                
+                # 2. Kaynakları veritabanından al
+                if source_id:
+                    # Tek kaynak
+                    src_resp = await client.get(
+                        f"{supabase.rest_url}/festival_sources",
+                        headers=supabase.headers,
+                        params={"id": f"eq.{source_id}", "select": "id,name,source_type,url,is_active"}
+                    )
+                else:
+                    # Tüm aktif kaynaklar
+                    src_resp = await client.get(
+                        f"{supabase.rest_url}/festival_sources",
+                        headers=supabase.headers,
+                        params={"is_active": "eq.true", "select": "id,name,source_type,url,is_active"}
+                    )
+                
+                if src_resp.status_code == 200:
+                    sources_to_scrape = src_resp.json()
+                
+                if not sources_to_scrape:
+                    logger.warning("⚠️ No festival sources found in database!")
+                    return {"items_found": 0, "items_new": 0, "status": "no_sources"}
+                
+                logger.info(f"📋 Found {len(sources_to_scrape)} sources to scrape")
+                
+                # 3. Her kaynağı sırayla çek
+                scraper = FestivalScraper()
+                all_festivals = []
+                
+                for source in sources_to_scrape:
+                    src_id = source['id']
+                    src_name = source['name']
+                    src_type = source['source_type']
+                    src_url = source.get('url')  # ✅ URL'yi de al
+                    
+                    logger.info(f"🔄 Scraping: {src_name} ({src_type})")
+                    
+                    try:
+                        festivals = await scraper.scrape_by_source_type(src_type, src_id, src_url)
+                        all_festivals.extend(festivals)
+                        
+                        # ✅ last_fetched_at güncelle
+                        await client.patch(
+                            f"{supabase.rest_url}/festival_sources",
+                            headers=supabase.headers,
+                            params={"id": f"eq.{src_id}"},
+                            json={
+                                "last_fetched_at": datetime.now().isoformat(),
+                                "last_error": None
+                            }
+                        )
+                        logger.info(f"✅ {src_name}: {len(festivals)} festivals")
+                        
+                    except Exception as e:
+                        # Hata durumunda last_error güncelle
+                        await client.patch(
+                            f"{supabase.rest_url}/festival_sources",
+                            headers=supabase.headers,
+                            params={"id": f"eq.{src_id}"},
+                            json={
+                                "last_fetched_at": datetime.now().isoformat(),
+                                "last_error": str(e)[:500]
+                            }
+                        )
+                        logger.error(f"❌ {src_name} error: {e}")
+                
+                logger.info(f"📊 Total festivals found: {len(all_festivals)}")
+                
+                if not all_festivals:
+                    return {
+                        "items_found": 0,
+                        "items_new": 0,
+                        "items_updated": 0,
+                        "items_duplicates": 0
+                    }
+                
+                # 4. Veritabanına kaydet (UPSERT ile)
+                saved_count = 0
+                updated_count = 0
+                
+                for festival in all_festivals:
+                    result = await supabase.sync_discovered_festival(festival)
+                    if result:
+                        saved_count += 1
+                
+                logger.info(f"✅ Saved/Updated: {saved_count} festivals")
+                
+                return {
+                    "items_found": len(all_festivals),
+                    "items_new": saved_count,
+                    "items_updated": updated_count,
+                    "items_duplicates": len(all_festivals) - saved_count
+                }
         
-        # Run the async function
         result = asyncio.run(run_scraping())
         
-        # Update job status
-        if supabase_service.enabled and job_id:
+        # Job durumunu güncelle
+        if supabase.enabled and job_id:
             async def update_job():
                 import httpx
                 duration = int((datetime.now() - start_time).total_seconds())
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     await client.patch(
-                        f"{supabase_service.rest_url}/scraping_jobs",
-                        headers=supabase_service.headers,
+                        f"{supabase.rest_url}/scraping_jobs",
+                        headers=supabase.headers,
                         params={"id": f"eq.{job_id}"},
                         json={
                             "status": "completed",
                             "completed_at": datetime.now().isoformat(),
                             "duration_seconds": duration,
-                            **result
+                            "items_found": result.get("items_found", 0),
+                            "items_saved": result.get("items_new", 0),
+                            "items_updated": result.get("items_updated", 0),
+                            "items_skipped": result.get("items_duplicates", 0)
                         }
                     )
-            
             asyncio.run(update_job())
         
         logger.info(f"✅ Festival scraping completed: {result}")
@@ -127,122 +179,136 @@ def scrape_festivals_task(self):
     except Exception as e:
         logger.error(f"❌ Festival scraping failed: {e}", exc_info=True)
         
-        # Update job as failed
         if job_id:
             async def mark_failed():
                 import httpx
                 duration = int((datetime.now() - start_time).total_seconds())
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     await client.patch(
-                        f"{supabase_service.rest_url}/scraping_jobs",
-                        headers=supabase_service.headers,
+                        f"{supabase.rest_url}/scraping_jobs",
+                        headers=supabase.headers,
                         params={"id": f"eq.{job_id}"},
                         json={
                             "status": "failed",
                             "completed_at": datetime.now().isoformat(),
                             "duration_seconds": duration,
-                            "error_message": str(e)
+                            "error_message": str(e)[:500]
                         }
                     )
-            
             asyncio.run(mark_failed())
         
         raise
 
-
 @shared_task(name="aggregate_news", bind=True)
-def aggregate_news_task(self):
+def aggregate_news_task(self, source_id=None):
     """
-    Run every 6 hours to fetch news from RSS feeds
-    
-    Process:
-    1. Fetch from RSS feeds
-    2. AI filter (relevance >= 70)
-    3. Generate embeddings
-    4. Deduplicate by URL
-    5. Save to news_articles table
-    6. Update news_sources.last_fetched_at
+    Fetch news. 
+    If source_id is provided, fetches ONLY that source (Manual Trigger).
+    If no source_id, fetches ALL active sources from DB (Scheduled).
     """
     import asyncio
+    import httpx
     from backend.services.news_aggregator import NewsAggregator
-    from backend.services.ai_filter import AIFilter
     from backend.services.supabase_sync import SupabaseSyncService
     
-    logger.info("📰 Starting news aggregation task...")
+    target_name = f"Source {source_id}" if source_id else "ALL Active Sources"
+    logger.info(f"📰 Starting news aggregation... (Target: {target_name})")
     
-    job_id = None
     start_time = datetime.now()
+    job_id = None
+    supabase = SupabaseSyncService()
     
     try:
-        supabase_service = SupabaseSyncService()
-        
         async def run_aggregation():
             nonlocal job_id
+            sources_to_scrape = []
             
-            # Create job record
-            if supabase_service.enabled:
-                import httpx
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.post(
-                        f"{supabase_service.rest_url}/scraping_jobs",
-                        headers=supabase_service.headers,
-                        json={
-                            "job_type": "news",
-                            "source": "all",
-                            "status": "running",
-                            "started_at": start_time.isoformat()
-                        }
+            # 1. Kaynakları Veritabanından Seç
+            if supabase.enabled:
+                async with httpx.AsyncClient() as client:
+                    # Job kaydı oluştur
+                    job_payload = {
+                        "job_type": "news",
+                        "status": "running",
+                        "started_at": start_time.isoformat()
+                    }
+                    
+                    if source_id:
+                        job_payload["source_id"] = source_id
+                    
+                    # Job'ı başlat
+                    job_resp = await client.post(
+                        f"{supabase.rest_url}/scraping_jobs",
+                        headers=supabase.headers,
+                        json=job_payload
                     )
-                    if response.status_code in [200, 201]:
-                        result = response.json()
-                        if result and len(result) > 0:
-                            job_id = result[0].get('id')
-            
-            # 1. Aggregate news
-            aggregator = NewsAggregator()
+                    if job_resp.status_code in [200, 201]:
+                        job_id = job_resp.json()[0].get('id')
+
+                    # --- KAYNAK SEÇİMİ (KRİTİK BÖLÜM) ---
+                    if source_id:
+                        # DURUM A: Tek bir kaynağı çek (Butona basıldıysa)
+                        logger.info(f"🎯 Fetching specific source ID: {source_id}")
+                        src_resp = await client.get(
+                            f"{supabase.rest_url}/news_sources",
+                            headers=supabase.headers,
+                            # ✅ type alanını da çekiyoruz ki Scraper mı RSS mi bilelim
+                            params={"id": f"eq.{source_id}", "select": "name,url,id,source_type"}
+                        )
+                        if src_resp.status_code == 200:
+                            sources_to_scrape = src_resp.json()
+                    else:
+                        # DURUM B: Tüm aktif kaynakları çek (Otomatik zamanlama)
+                        logger.info("🔄 Fetching ALL active sources from DB")
+                        src_resp = await client.get(
+                            f"{supabase.rest_url}/news_sources",
+                            headers=supabase.headers,
+                            params={"is_active": "eq.true", "select": "name,url,id,source_type"}
+                        )
+                        if src_resp.status_code == 200:
+                            sources_to_scrape = src_resp.json()
+
+            # Kaynak bulunamadıysa işlem yapma
+            if not sources_to_scrape:
+                logger.warning("⚠️ No sources found in database to scrape!")
+                return {"items_found": 0, "status": "no_sources"}
+
+            logger.info(f"🚀 Processing {len(sources_to_scrape)} sources: {[s['name'] for s in sources_to_scrape]}")
+
+            # 2. Aggregator'ı Başlat (Veritabanından gelen kaynak listesiyle)
+            aggregator = NewsAggregator(sources=sources_to_scrape)
             articles = await aggregator.fetch_and_deduplicate()
-            logger.info(f"📊 Found {len(articles)} unique articles")
             
-            if not articles:
-                return {
-                    "items_found": 0,
-                    "items_new": 0,
-                    "items_filtered": 0,
-                    "items_duplicates": 0
-                }
+            logger.info(f"📊 Found {len(articles)} relevant articles")
             
-            # 2. AI filter
-            ai_filter = AIFilter()
-            filtered_articles = await ai_filter.filter_news(articles)
-            logger.info(f"✓ {len(filtered_articles)} articles passed AI filter")
-            
-            # 3. Save to Supabase
+            # 3. Veritabanına Kaydet
             saved_count = 0
-            for article in filtered_articles:
-                article_id = await supabase_service.sync_news_article(article)
-                if article_id:
-                    saved_count += 1
+            for article in articles:
+                # sync_news_article zaten akıllı etiketleme yapıyor
+                res = await supabase.sync_news_article(article)
+                if res: saved_count += 1
             
             logger.info(f"✅ Saved {saved_count} articles to database")
             
             return {
                 "items_found": len(articles),
                 "items_new": saved_count,
-                "items_filtered": len(articles) - len(filtered_articles),
-                "items_duplicates": 0  # Already deduplicated
+                "items_filtered": 0,
+                "items_duplicates": len(articles) - saved_count
             }
-        
+
+        # Async fonksiyonu çalıştır
         result = asyncio.run(run_aggregation())
         
-        # Update job status
-        if supabase_service.enabled and job_id:
-            async def update_job():
+        # Job durumunu güncelle (Başarılı)
+        if supabase.enabled and job_id:
+            async def update_success():
                 import httpx
                 duration = int((datetime.now() - start_time).total_seconds())
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with httpx.AsyncClient() as client:
                     await client.patch(
-                        f"{supabase_service.rest_url}/scraping_jobs",
-                        headers=supabase_service.headers,
+                        f"{supabase.rest_url}/scraping_jobs",
+                        headers=supabase.headers,
                         params={"id": f"eq.{job_id}"},
                         json={
                             "status": "completed",
@@ -251,24 +317,21 @@ def aggregate_news_task(self):
                             **result
                         }
                     )
+            asyncio.run(update_success())
             
-            asyncio.run(update_job())
-        
-        logger.info(f"✅ News aggregation completed: {result}")
         return result
-        
+
     except Exception as e:
         logger.error(f"❌ News aggregation failed: {e}", exc_info=True)
-        
-        # Update job as failed
+        # Job durumunu güncelle (Hata)
         if job_id:
-            async def mark_failed():
+            async def update_fail():
                 import httpx
                 duration = int((datetime.now() - start_time).total_seconds())
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with httpx.AsyncClient() as client:
                     await client.patch(
-                        f"{supabase_service.rest_url}/scraping_jobs",
-                        headers=supabase_service.headers,
+                        f"{supabase.rest_url}/scraping_jobs",
+                        headers=supabase.headers,
                         params={"id": f"eq.{job_id}"},
                         json={
                             "status": "failed",
@@ -277,11 +340,8 @@ def aggregate_news_task(self):
                             "error_message": str(e)
                         }
                     )
-            
-            asyncio.run(mark_failed())
-        
+            asyncio.run(update_fail())
         raise
-
 
 @shared_task(name="cleanup_old_news")
 def cleanup_old_news_task():

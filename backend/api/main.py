@@ -2,8 +2,13 @@
 AI Cine Analyzer - Main FastAPI Application - FIXED
 Modern film analysis platform with Gemini AI
 """
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, UploadFile, File, Form
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, UploadFile, File, Form, Request 
 from backend.utils.auth import verify_admin, get_admin_emails, verify_creator_or_admin, get_current_user
+
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+
+from fastapi.middleware.cors import CORSMiddleware
 
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl, Field
@@ -65,7 +70,7 @@ app.add_middleware(
 # Include routers
 app.include_router(festivals_router, prefix="/api", tags=["festivals"])
 app.include_router(upload_router, tags=["upload"])
-app.include_router(content_router, prefix="/api", tags=["content"])
+app.include_router(content_router, prefix="/api/content", tags=["content"])
 
 logger.info("✅ Upload router registered at /api/upload")
 logger.info("✅ Content router registered at /api/content")
@@ -120,13 +125,13 @@ async def root():
         "version": "2.0.0",
         "description": "Professional film analysis platform",
         "features": [
-            "🎬 Cinematography analysis (shots, lighting, color)",
-            "📖 Narrative breakdown with Gemini AI",
-            "🎭 Character tracking & emotion detection",
-            "🎵 Audio mood & pacing analysis",
-            "🎨 Visual style classification",
-            "🔍 Vector-based similarity search",
-            "📊 Complete reports (JSON, HTML, TXT)"
+            "Cinematography analysis (shots, lighting, color)",
+            "Narrative breakdown with Gemini AI",
+            "Character tracking & emotion detection",
+            "Audio mood & pacing analysis",
+            "Visual style classification",
+            "Vector-based similarity search",
+            "Complete reports (JSON, HTML, TXT)"
         ],
         "endpoints": {
             "POST /api/analyze": "Submit video for analysis",
@@ -761,6 +766,16 @@ async def admin_upload_photo(
         logger.error(f"❌ Upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    print(f"\n❌ VALIDATION ERROR on {request.method} {request.url}")
+    print(f"📥 Body Payload: {exc.body}")
+    print(f"⚠️ Error Details: {exc.errors()}\n")
+    
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": str(exc.body)},
+    )
 
 if __name__ == "__main__":
     import uvicorn
