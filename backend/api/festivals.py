@@ -947,7 +947,6 @@ async def scrape_festival_films(
     }
     """
     from backend.services.festival_film_scraper import FestivalFilmScraper
-    from backend.models.schemas import ScrapedFilmData, FestivalFilmScrapeResponse
     import uuid
     from datetime import datetime
     

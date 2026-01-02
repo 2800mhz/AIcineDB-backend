@@ -221,8 +221,8 @@ class FestivalFilmScraper:
             match = re.search(pattern, text, re.I)
             if match:
                 minutes = int(match.group(1))
-                # Check if second group exists and is not None
-                seconds = int(match.group(2)) if match.lastindex >= 2 and match.group(2) else 0
+                # Safely get second group if it exists
+                seconds = int(match.group(2)) if len(match.groups()) >= 2 and match.group(2) else 0
                 return f"{minutes}:{seconds:02d}"
         
         return None
