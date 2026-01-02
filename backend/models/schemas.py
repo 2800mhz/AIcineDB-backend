@@ -783,4 +783,3 @@ class FestivalFilmScrapeResponse(BaseModel):
                 "errors": []
             }
         }
-    job_id: Optional[UUID4] = None

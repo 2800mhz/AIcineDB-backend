@@ -1024,31 +1024,46 @@ async def scrape_festival_films(
                 # Link film to festival if festival_id provided
                 if request.festival_id:
                     try:
-                        # Check if submission already exists
-                        existing_submission = festival_service.supabase.table("festival_submissions")\
-                            .select("id")\
-                            .eq("festival_id", request.festival_id)\
-                            .eq("title_id", title_id)\
-                            .execute()
+                        # Import get_db for PostgreSQL access
+                        from backend.database.connection import get_db
                         
-                        if not existing_submission.data:
-                            submission_id = str(uuid.uuid4())
-                            submission_record = {
-                                "id": submission_id,
-                                "festival_id": request.festival_id,
-                                "title_id": title_id,
-                                "user_id": current_user["id"],
-                                "category": film_data.get("category"),
-                                "status": "accepted",  # Auto-accept festival films
-                                "is_winner": True if film_data.get("category") else False,
-                                "submitted_at": datetime.now().isoformat(),
-                            }
+                        # Check if submission already exists in PostgreSQL
+                        async with get_db() as db:
+                            existing = await db.fetch_one(
+                                query="""
+                                SELECT id FROM festival_submissions 
+                                WHERE festival_id = :festival_id AND title_id = :title_id
+                                """,
+                                values={
+                                    "festival_id": request.festival_id,
+                                    "title_id": title_id
+                                }
+                            )
                             
-                            festival_service.supabase.table("festival_submissions")\
-                                .insert(submission_record)\
-                                .execute()
-                            
-                            logger.info(f"✅ Linked film to festival: {film_data['title']} → {request.festival_id}")
+                            if not existing:
+                                submission_id = str(uuid.uuid4())
+                                await db.execute(
+                                    query="""
+                                    INSERT INTO festival_submissions (
+                                        id, festival_id, title_id, user_id, 
+                                        category, status, is_winner, submitted_at
+                                    ) VALUES (
+                                        :id, :festival_id, :title_id, :user_id,
+                                        :category, :status, :is_winner, NOW()
+                                    )
+                                    """,
+                                    values={
+                                        "id": submission_id,
+                                        "festival_id": request.festival_id,
+                                        "title_id": title_id,
+                                        "user_id": current_user["id"],
+                                        "category": film_data.get("category"),
+                                        "status": "accepted",
+                                        "is_winner": True if film_data.get("category") else False
+                                    }
+                                )
+                                
+                                logger.info(f"✅ Linked film to festival: {film_data['title']} → {request.festival_id}")
                     except Exception as e:
                         logger.warning(f"⚠️  Failed to link film to festival: {e}")
                         errors.append(f"Failed to link {film_data['title']} to festival: {str(e)}")

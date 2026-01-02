@@ -7,7 +7,7 @@ import logging
 import re
 import asyncio
 from typing import List, Dict, Optional
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
@@ -221,7 +221,8 @@ class FestivalFilmScraper:
             match = re.search(pattern, text, re.I)
             if match:
                 minutes = int(match.group(1))
-                seconds = int(match.group(2)) if len(match.groups()) > 1 else 0
+                # Check if second group exists and is not None
+                seconds = int(match.group(2)) if match.lastindex >= 2 and match.group(2) else 0
                 return f"{minutes}:{seconds:02d}"
         
         return None
