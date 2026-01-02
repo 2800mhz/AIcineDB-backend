@@ -16,6 +16,9 @@ from backend.models.schemas import (
     FestivalSubmissionResponse,
     FestivalOrganizerCreate,
     FestivalEventCreate,
+    FestivalFilmScrapeRequest,
+    FestivalFilmScrapeResponse,
+    ScrapedFilmData,
 )
 from backend.utils.auth import verify_admin, verify_creator, get_current_user
 from backend.services.festival_service import FestivalService, get_supabase_client
@@ -907,3 +910,170 @@ async def delete_event(
     except Exception as e:
         logger.error(f"❌ Failed to delete event: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# FESTIVAL FILM SCRAPER
+# ============================================================================
+
+@router.post("/festivals/scrape-films")
+async def scrape_festival_films(
+    request: FestivalFilmScrapeRequest,
+    current_user: dict = Depends(verify_admin),
+    festival_service: FestivalService = Depends(get_festival_service)
+):
+    """
+    Scrape films from a festival website (admin only)
+    
+    This endpoint:
+    1. Scrapes the festival website for films with YouTube embeds
+    2. Creates title records in the database for each film
+    3. Links films to the festival via festival_submissions
+    4. Returns statistics about the import
+    
+    Request:
+    {
+        "festival_url": "https://aiff.runwayml.com/2024",
+        "festival_name": "Runway AI Film Festival 2024",  // optional
+        "festival_id": "uuid"  // optional, to link to existing festival
+    }
+    
+    Response:
+    {
+        "films_found": 15,
+        "films_imported": 12,
+        "films_skipped": 3,  // already exists
+        "films": [...]
+    }
+    """
+    from backend.services.festival_film_scraper import FestivalFilmScraper
+    from backend.models.schemas import ScrapedFilmData, FestivalFilmScrapeResponse
+    import uuid
+    from datetime import datetime
+    
+    try:
+        logger.info(f"🎬 Starting festival film scrape: {request.festival_url}")
+        logger.info(f"   Requested by admin: {current_user['id']}")
+        
+        # Initialize scraper
+        scraper = FestivalFilmScraper()
+        
+        # Scrape films from festival website
+        scraped_films = await scraper.scrape_festival_films(str(request.festival_url))
+        
+        if not scraped_films:
+            logger.warning(f"⚠️  No films found at {request.festival_url}")
+            return FestivalFilmScrapeResponse(
+                films_found=0,
+                films_imported=0,
+                films_skipped=0,
+                films=[],
+                errors=["No films found on the festival page"]
+            )
+        
+        logger.info(f"✅ Scraped {len(scraped_films)} films from {request.festival_url}")
+        
+        # Import films to database
+        films_imported = 0
+        films_skipped = 0
+        imported_films = []
+        errors = []
+        
+        for film_data in scraped_films:
+            try:
+                # Check if film already exists by YouTube URL
+                existing_title = festival_service.supabase.table("titles")\
+                    .select("id, title, trailer_youtube_url")\
+                    .eq("trailer_youtube_url", film_data["youtube_url"])\
+                    .execute()
+                
+                if existing_title.data:
+                    # Film already exists
+                    logger.info(f"⏭️  Skipping existing film: {film_data['title']}")
+                    films_skipped += 1
+                    title_id = existing_title.data[0]["id"]
+                else:
+                    # Create new title record
+                    title_id = str(uuid.uuid4())
+                    
+                    title_record = {
+                        "id": title_id,
+                        "title": film_data["title"],
+                        "trailer_youtube_url": film_data["youtube_url"],
+                        "description": film_data.get("description"),
+                        "director": film_data.get("director"),
+                        "festival_source_url": film_data["festival_source_url"],
+                        "is_festival_film": True,
+                        "uploaded_by": current_user["id"],
+                        "status": "approved",  # Auto-approve festival films
+                        "created_at": datetime.now().isoformat(),
+                    }
+                    
+                    result = festival_service.supabase.table("titles")\
+                        .insert(title_record)\
+                        .execute()
+                    
+                    if result.data:
+                        logger.info(f"✅ Created title: {film_data['title']} (ID: {title_id})")
+                        films_imported += 1
+                    else:
+                        logger.error(f"❌ Failed to create title: {film_data['title']}")
+                        errors.append(f"Failed to create title: {film_data['title']}")
+                        continue
+                
+                # Link film to festival if festival_id provided
+                if request.festival_id:
+                    try:
+                        # Check if submission already exists
+                        existing_submission = festival_service.supabase.table("festival_submissions")\
+                            .select("id")\
+                            .eq("festival_id", request.festival_id)\
+                            .eq("title_id", title_id)\
+                            .execute()
+                        
+                        if not existing_submission.data:
+                            submission_id = str(uuid.uuid4())
+                            submission_record = {
+                                "id": submission_id,
+                                "festival_id": request.festival_id,
+                                "title_id": title_id,
+                                "user_id": current_user["id"],
+                                "category": film_data.get("category"),
+                                "status": "accepted",  # Auto-accept festival films
+                                "is_winner": True if film_data.get("category") else False,
+                                "submitted_at": datetime.now().isoformat(),
+                            }
+                            
+                            festival_service.supabase.table("festival_submissions")\
+                                .insert(submission_record)\
+                                .execute()
+                            
+                            logger.info(f"✅ Linked film to festival: {film_data['title']} → {request.festival_id}")
+                    except Exception as e:
+                        logger.warning(f"⚠️  Failed to link film to festival: {e}")
+                        errors.append(f"Failed to link {film_data['title']} to festival: {str(e)}")
+                
+                # Add to imported films list
+                imported_films.append(ScrapedFilmData(**film_data))
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to import film {film_data.get('title', 'Unknown')}: {e}")
+                errors.append(f"Failed to import {film_data.get('title', 'Unknown')}: {str(e)}")
+                continue
+        
+        logger.info(f"🎉 Import complete: {films_imported} imported, {films_skipped} skipped")
+        
+        return FestivalFilmScrapeResponse(
+            films_found=len(scraped_films),
+            films_imported=films_imported,
+            films_skipped=films_skipped,
+            films=imported_films,
+            errors=errors
+        )
+    
+    except Exception as e:
+        logger.error(f"❌ Festival film scraping failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to scrape festival films: {str(e)}"
+        )

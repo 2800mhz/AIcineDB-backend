@@ -719,4 +719,68 @@ class ManualTriggerResponse(BaseModel):
     """Response when manually triggering a background task"""
     task_id: str
     message: str
+
+
+# ============================================================================
+# FESTIVAL FILM SCRAPER
+# ============================================================================
+
+class FestivalFilmScrapeRequest(BaseModel):
+    """Request to scrape films from a festival website"""
+    festival_url: HttpUrl = Field(..., description="URL of the festival showcase page")
+    festival_name: Optional[str] = Field(None, description="Optional name of the festival")
+    festival_id: Optional[str] = Field(None, description="Optional festival ID to link films to")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "festival_url": "https://aiff.runwayml.com/2024",
+                "festival_name": "Runway AI Film Festival 2024",
+                "festival_id": "550e8400-e29b-41d4-a716-446655440000"
+            }
+        }
+
+
+class ScrapedFilmData(BaseModel):
+    """Model for a scraped film"""
+    title: str
+    director: Optional[str] = None
+    youtube_url: str
+    category: Optional[str] = Field(None, description="Award category (Grand Prix, Gold, Silver, Merit, Honoree)")
+    description: Optional[str] = None
+    duration: Optional[str] = None
+    festival_source_url: str
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "title": "The Last Frame",
+                "director": "John Doe",
+                "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "category": "Grand Prix",
+                "description": "A stunning AI-generated film about...",
+                "duration": "5:30",
+                "festival_source_url": "https://aiff.runwayml.com/2024"
+            }
+        }
+
+
+class FestivalFilmScrapeResponse(BaseModel):
+    """Response from scraping festival films"""
+    films_found: int = Field(..., description="Total number of films found")
+    films_imported: int = Field(..., description="Number of films successfully imported")
+    films_skipped: int = Field(..., description="Number of films skipped (already exists)")
+    films: List[ScrapedFilmData] = Field(..., description="List of scraped films")
+    errors: List[str] = Field(default_factory=list, description="List of errors encountered")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "films_found": 15,
+                "films_imported": 12,
+                "films_skipped": 3,
+                "films": [],
+                "errors": []
+            }
+        }
     job_id: Optional[UUID4] = None
