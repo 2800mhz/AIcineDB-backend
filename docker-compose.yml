@@ -4,11 +4,11 @@ services:
     image: ankane/pgvector:latest
     container_name: aicine_postgres
     environment:
-      POSTGRES_DB: aicine
-      POSTGRES_USER: aicine_user
-      POSTGRES_PASSWORD: aicine_pass
+      POSTGRES_DB: ${POSTGRES_DB:-aicine}
+      POSTGRES_USER: ${POSTGRES_USER:-aicine_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aicine_pass}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -17,18 +17,22 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+    restart: unless-stopped
 
   # Redis for task queue
   redis:
     image: redis:7-alpine
     container_name: aicine_redis
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 5s
+    restart: unless-stopped
 
   # FastAPI backend
   api:
@@ -37,12 +41,52 @@ services:
       dockerfile: docker/Dockerfile.api
     container_name: aicine_api
     environment:
-      DATABASE_URL: postgresql://aicine_user:aicine_pass@postgres:5432/aicine
+      # Database
+      DATABASE_URL: postgresql://${POSTGRES_USER:-aicine_user}:${POSTGRES_PASSWORD:-aicine_pass}@postgres:5432/${POSTGRES_DB:-aicine}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: ${POSTGRES_USER:-aicine_user}
+      
+      # Redis
       REDIS_URL: redis://redis:6379
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      
+      # API Keys
       GEMINI_API_KEY: ${GEMINI_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      
+      # Supabase
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      
+      # Application settings
+      APP_ENV: ${APP_ENV:-development}
+      DEBUG: ${DEBUG:-true}
       PYTHONUNBUFFERED: 1
+      
+      # File storage
+      OUTPUT_DIR: /app/analyses
+      VIDEO_CACHE_DIR: /app/data/videos
+      MAX_VIDEO_SIZE_MB: ${MAX_VIDEO_SIZE_MB:-500}
+      
+      # Analysis settings
+      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      FRAME_EXTRACTION_FPS: ${FRAME_EXTRACTION_FPS:-1.0}
+      CHARACTER_DETECTION_FPS: ${CHARACTER_DETECTION_FPS:-2.0}
+      
+      # Celery settings
+      CELERY_BROKER_URL: redis://redis:6379
+      CELERY_RESULT_BACKEND: redis://redis:6379
+      
+      # Content aggregation
+      AI_FILTER_ENABLED: ${AI_FILTER_ENABLED:-true}
+      AI_RELEVANCE_THRESHOLD_FESTIVALS: ${AI_RELEVANCE_THRESHOLD_FESTIVALS:-60}
+      AI_RELEVANCE_THRESHOLD_NEWS: ${AI_RELEVANCE_THRESHOLD_NEWS:-70}
+      DUPLICATE_SIMILARITY_THRESHOLD: ${DUPLICATE_SIMILARITY_THRESHOLD:-0.95}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     volumes:
       - ./backend:/app/backend
       - ./data:/app/data
@@ -52,6 +96,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
     command: uvicorn backend.api.main:app --host 0.0.0.0 --port 8000 --reload
 
   # Celery worker for background tasks
@@ -61,10 +112,52 @@ services:
       dockerfile: docker/Dockerfile.worker
     container_name: aicine_worker
     environment:
-      DATABASE_URL: postgresql://aicine_user:aicine_pass@postgres:5432/aicine
+      # Database
+      DATABASE_URL: postgresql://${POSTGRES_USER:-aicine_user}:${POSTGRES_PASSWORD:-aicine_pass}@postgres:5432/${POSTGRES_DB:-aicine}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: ${POSTGRES_USER:-aicine_user}
+      
+      # Redis
       REDIS_URL: redis://redis:6379
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      
+      # API Keys
       GEMINI_API_KEY: ${GEMINI_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      
+      # Supabase
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      
+      # Application settings
+      APP_ENV: ${APP_ENV:-development}
       PYTHONUNBUFFERED: 1
+      
+      # File storage
+      OUTPUT_DIR: /app/analyses
+      VIDEO_CACHE_DIR: /app/data/videos
+      MAX_VIDEO_SIZE_MB: ${MAX_VIDEO_SIZE_MB:-500}
+      
+      # Analysis settings
+      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      FRAME_EXTRACTION_FPS: ${FRAME_EXTRACTION_FPS:-1.0}
+      CHARACTER_DETECTION_FPS: ${CHARACTER_DETECTION_FPS:-2.0}
+      
+      # Celery settings
+      CELERY_BROKER_URL: redis://redis:6379
+      CELERY_RESULT_BACKEND: redis://redis:6379
+      CELERY_WORKER_CONCURRENCY: ${CELERY_WORKER_CONCURRENCY:-2}
+      CELERY_TASK_TIME_LIMIT: ${CELERY_TASK_TIME_LIMIT:-7200}
+      CELERY_TASK_SOFT_TIME_LIMIT: ${CELERY_TASK_SOFT_TIME_LIMIT:-6000}
+      
+      # Content aggregation
+      AI_FILTER_ENABLED: ${AI_FILTER_ENABLED:-true}
+      AI_RELEVANCE_THRESHOLD_FESTIVALS: ${AI_RELEVANCE_THRESHOLD_FESTIVALS:-60}
+      AI_RELEVANCE_THRESHOLD_NEWS: ${AI_RELEVANCE_THRESHOLD_NEWS:-70}
+      DUPLICATE_SIMILARITY_THRESHOLD: ${DUPLICATE_SIMILARITY_THRESHOLD:-0.95}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
     volumes:
       - ./backend:/app/backend
       - ./data:/app/data
@@ -74,6 +167,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A backend.tasks.celery_app inspect ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
     command: celery -A backend.tasks.celery_app worker --loglevel=info -E
 
   # Flower (Celery monitoring)
@@ -87,10 +187,19 @@ services:
       CELERY_BROKER_URL: redis://redis:6379
       CELERY_RESULT_BACKEND: redis://redis:6379
     ports:
-      - "5555:5555"
+      - "${FLOWER_PORT:-5555}:5555"
     depends_on:
-      - redis
-      - worker
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5555/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
     command: celery -A backend.tasks.celery_app flower --port=5555 --broker=redis://redis:6379
 
 volumes:

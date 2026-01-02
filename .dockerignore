@@ -2,6 +2,7 @@
 .git
 .gitignore
 .gitattributes
+.github/
 
 # Python
 __pycache__
@@ -47,6 +48,7 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *.cover
+.hypothesis/
 
 # IDE
 .vscode/
@@ -56,7 +58,7 @@ coverage.xml
 *~
 .DS_Store
 
-# AIcineDB-specific
+# AIcineDB-specific data (not needed in image)
 data/
 analyses/
 *.mp4
@@ -73,30 +75,54 @@ analyses/
 .cache/
 models/
 
-# Documentation
+# Documentation (except README)
 *.md
 !README.md
 LICENSE
+docs/
+examples/
 
-# Docker
+# Docker (no need to copy Docker files into image)
 Dockerfile*
 docker-compose*.yml
 .dockerignore
 
 # CI/CD
 .github/
+.gitlab-ci.yml
+.travis.yml
 
 # Misc
 .railwayignore
-requirements.txt.backup
+railway.json
+Procfile
 runtime.txt
+requirements.txt.backup
 setup*.ps1
 setup*.sh
+aicine_setup_script.sh
 testing.bat
-aicine_*.py
-aicine_*.md
 test_*.jpg
-git
-uvicorn
-scripts/
-docker/
+test_*.png
+
+# Scripts (exclude most scripts except migration scripts)
+scripts/*
+!scripts/migration/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.log
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# Node modules (if any)
+node_modules/
+
+# OS files
+Thumbs.db
+.DS_Store
