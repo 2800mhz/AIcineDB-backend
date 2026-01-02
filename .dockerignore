@@ -105,8 +105,9 @@ testing.bat
 test_*.jpg
 test_*.png
 
-# Scripts (only copy what's needed)
-scripts/
+# Scripts (exclude most scripts except migration scripts)
+scripts/*
+!scripts/migration/
 
 # Temporary files
 tmp/

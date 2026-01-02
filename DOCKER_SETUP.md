@@ -115,11 +115,24 @@ OPENAI_API_KEY=your_openai_api_key
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_KEY=your_service_key
 
-# Database (defaults work for docker-compose)
+# Database
+# For Docker Compose (services communicate via internal network):
 DATABASE_URL=postgresql://aicine_user:aicine_pass@postgres:5432/aicine
 
-# Redis (defaults work for docker-compose)
+# For local development (connecting from host to Docker):
+# DATABASE_URL=postgresql://aicine_user:aicine_pass@localhost:5432/aicine
+
+# PostgreSQL credentials (used by docker-compose.yml)
+POSTGRES_DB=aicine
+POSTGRES_USER=aicine_user
+POSTGRES_PASSWORD=aicine_pass
+
+# Redis
+# For Docker Compose:
 REDIS_URL=redis://redis:6379
+
+# For local development:
+# REDIS_URL=redis://localhost:6379
 ```
 
 ### Optional Variables

@@ -137,7 +137,8 @@ if [ -f "requirements.txt" ]; then
     if grep -q "playwright" requirements.txt; then
         echo "✅ Playwright dependency found"
     else
-        echo "⚠️  Playwright not found in requirements.txt"
+        echo "❌ Playwright not found in requirements.txt (required for worker)"
+        exit 1
     fi
     
     if grep -q "fastapi" requirements.txt; then
