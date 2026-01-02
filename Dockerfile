@@ -88,6 +88,8 @@ WORKDIR /app
 # Copy Python dependencies from builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy Playwright browsers cache directory
 COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
 
 # Copy application code
