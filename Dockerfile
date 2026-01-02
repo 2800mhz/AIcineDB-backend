@@ -77,8 +77,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browsers
-RUN playwright install chromium && \
-    playwright install-deps chromium
+# install-deps first for system dependencies, then install for browsers
+RUN playwright install-deps chromium && \
+    playwright install chromium
 
 # Stage 3: Final runtime stage
 FROM base
