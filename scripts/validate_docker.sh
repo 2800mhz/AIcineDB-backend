@@ -17,7 +17,7 @@ fi
 echo "✅ Docker is installed"
 
 # Check if Docker Compose is available
-if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; then
+if ! docker compose version &> /dev/null; then
     echo "❌ Docker Compose v2 is not available"
     exit 1
 fi
@@ -111,7 +111,7 @@ fi
 # Check required directories
 echo ""
 echo "Checking directories..."
-for dir in "backend" "docker" "docker/postgres"; do
+for dir in "backend" "docker"; do
     if [ -d "$dir" ]; then
         echo "✅ $dir/ exists"
     else
@@ -119,6 +119,13 @@ for dir in "backend" "docker" "docker/postgres"; do
         exit 1
     fi
 done
+
+# Check optional postgres init directory
+if [ -d "docker/postgres" ]; then
+    echo "✅ docker/postgres/ exists"
+else
+    echo "⚠️  docker/postgres/ not found (optional, but recommended for database init)"
+fi
 
 # Check requirements.txt
 echo ""
