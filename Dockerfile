@@ -1,8 +1,14 @@
-FROM python:3.11-slim
+# ============================================================================
+# Multi-stage Dockerfile for AIcineDB Backend
+# Optimized for Railway deployment with Playwright, FFmpeg, and audio processing
+# ============================================================================
+
+# Stage 1: Base dependencies stage
+FROM python:3.11-slim as base
 
 WORKDIR /app
 
-# System dependencies for opencv, audio processing, Playwright and other requirements
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     # Build tools
     gcc \
@@ -60,7 +66,12 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Python dependencies
+# Stage 2: Python dependencies
+FROM base as builder
+
+WORKDIR /app
+
+# Copy and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
@@ -69,14 +80,34 @@ RUN pip install --no-cache-dir --upgrade pip && \
 RUN playwright install chromium && \
     playwright install-deps chromium
 
-# Copy application
-COPY . .
+# Stage 3: Final runtime stage
+FROM base
+
+WORKDIR /app
+
+# Copy Python dependencies from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
+
+# Copy application code
+COPY backend /app/backend
 
 # Create necessary directories
 RUN mkdir -p /app/data /app/analyses
 
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=8000
+
 # Expose port (Railway will override with $PORT)
 EXPOSE 8000
 
-# Start command
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
+
+# Start command (Railway compatible)
 CMD uvicorn backend.api.main:app --host 0.0.0.0 --port ${PORT:-8000}
+
