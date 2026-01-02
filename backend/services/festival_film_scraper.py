@@ -40,12 +40,18 @@ class FestivalFilmScraper:
         """
         if sys.platform == 'win32':
             try:
+                # Get the current event loop policy
+                current_policy = asyncio.get_event_loop_policy()
+                
                 # Check if we need to set the event loop policy
-                if not isinstance(asyncio.get_event_loop_policy(), asyncio.WindowsProactorEventLoopPolicy):
+                if current_policy is None or not isinstance(current_policy, asyncio.WindowsProactorEventLoopPolicy):
                     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
                     logger.info("✅ Windows event loop policy set for Playwright compatibility")
-            except Exception as e:
+            except (RuntimeError, OSError) as e:
                 logger.warning(f"⚠️  Failed to set Windows event loop policy: {e}")
+            except Exception as e:
+                # Catch any other unexpected exceptions to avoid breaking initialization
+                logger.warning(f"⚠️  Unexpected error setting Windows event loop policy: {e}")
     
     async def scrape_festival_films(self, festival_url: str) -> List[Dict]:
         """
