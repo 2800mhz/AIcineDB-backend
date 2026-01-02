@@ -19,15 +19,15 @@ until redis-cli -h "${REDIS_HOST:-redis}" -p "${REDIS_PORT:-6379}" ping 2>/dev/n
 done
 echo "✅ Redis is up"
 
-# Run database migrations if they exist
-if [ -d "/app/backend/database/migrations" ]; then
+# Run database migrations if migration runner script exists
+if [ -f "/app/scripts/run_migrations.sh" ]; then
     echo "📊 Running database migrations..."
-    # Check if there's a migration runner script, otherwise skip
-    if [ -f "/app/scripts/run_migrations.sh" ]; then
-        bash /app/scripts/run_migrations.sh
-    else
-        echo "   No migration script found, skipping migrations"
-    fi
+    bash /app/scripts/run_migrations.sh
+elif [ -d "/app/backend/database/migrations" ]; then
+    echo "⚠️  Database migrations directory exists but no run_migrations.sh script found"
+    echo "   Skipping migrations - manual migration may be required"
+else
+    echo "ℹ️  No database migrations found, skipping"
 fi
 
 echo "✅ Initialization complete"

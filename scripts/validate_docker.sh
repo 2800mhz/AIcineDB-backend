@@ -39,9 +39,7 @@ echo "Validating Dockerfiles..."
 
 # Check main Dockerfile
 if [ -f "Dockerfile" ]; then
-    if docker build -f Dockerfile -t test:validate --dry-run . &> /dev/null || [ -f "Dockerfile" ]; then
-        echo "✅ Dockerfile exists and looks valid"
-    fi
+    echo "✅ Dockerfile exists"
 else
     echo "❌ Dockerfile not found"
     exit 1
@@ -49,9 +47,7 @@ fi
 
 # Check docker/Dockerfile.api
 if [ -f "docker/Dockerfile.api" ]; then
-    if docker build -f docker/Dockerfile.api -t test:validate --dry-run . &> /dev/null || [ -f "docker/Dockerfile.api" ]; then
-        echo "✅ docker/Dockerfile.api exists and looks valid"
-    fi
+    echo "✅ docker/Dockerfile.api exists"
 else
     echo "❌ docker/Dockerfile.api not found"
     exit 1
@@ -59,9 +55,7 @@ fi
 
 # Check docker/Dockerfile.worker
 if [ -f "docker/Dockerfile.worker" ]; then
-    if docker build -f docker/Dockerfile.worker -t test:validate --dry-run . &> /dev/null || [ -f "docker/Dockerfile.worker" ]; then
-        echo "✅ docker/Dockerfile.worker exists and looks valid"
-    fi
+    echo "✅ docker/Dockerfile.worker exists"
 else
     echo "❌ docker/Dockerfile.worker not found"
     exit 1
