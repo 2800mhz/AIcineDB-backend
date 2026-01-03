@@ -10,7 +10,8 @@ from pydantic import (
     HttpUrl,
     field_validator,
     constr,
-    ConfigDict
+    ConfigDict,
+    ValidationInfo,
 )
 import bleach
 
@@ -98,7 +99,7 @@ class TitleBase(BaseModel):
     
     @field_validator('slug', mode='before')
     @classmethod
-    def generate_slug(cls, v: Optional[str], info) -> Optional[str]:
+    def generate_slug(cls, v: Optional[str], info: ValidationInfo) -> Optional[str]:
         """
         Auto-generate slug from title if not provided.
         

@@ -4,7 +4,7 @@ Provides reusable dependencies for JWT validation and role-based access control
 """
 import os
 import logging
-from typing import Optional, Callable
+from typing import List, Optional, Callable
 from fastapi import HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from backend.utils.supabase_client import get_supabase_client
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer()
 
 
-def get_admin_emails() -> list[str]:
+def get_admin_emails() -> List[str]:
     """
     Get list of admin emails from environment variables.
     

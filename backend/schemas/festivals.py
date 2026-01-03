@@ -11,7 +11,8 @@ from pydantic import (
     EmailStr,
     field_validator,
     constr,
-    ConfigDict
+    ConfigDict,
+    ValidationInfo,
 )
 import bleach
 
@@ -112,7 +113,7 @@ class FestivalBase(BaseModel):
     
     @field_validator('slug', mode='before')
     @classmethod
-    def generate_slug(cls, v: Optional[str], info) -> Optional[str]:
+    def generate_slug(cls, v: Optional[str], info: ValidationInfo) -> Optional[str]:
         """
         Auto-generate slug from name if not provided.
         """
@@ -129,7 +130,7 @@ class FestivalBase(BaseModel):
     
     @field_validator('end_date')
     @classmethod
-    def validate_end_date(cls, v: datetime, info) -> datetime:
+    def validate_end_date(cls, v: datetime, info: ValidationInfo) -> datetime:
         """
         Ensure end_date is after start_date.
         """
@@ -141,7 +142,7 @@ class FestivalBase(BaseModel):
     
     @field_validator('submission_end_date')
     @classmethod
-    def validate_submission_end_date(cls, v: Optional[datetime], info) -> Optional[datetime]:
+    def validate_submission_end_date(cls, v: Optional[datetime], info: ValidationInfo) -> Optional[datetime]:
         """
         Ensure submission_end_date is before start_date.
         """

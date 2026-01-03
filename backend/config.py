@@ -31,6 +31,17 @@ class Settings(BaseSettings):
         description="PostgreSQL connection URL with pgvector"
     )
     
+    @field_validator("DATABASE_URL")
+    @classmethod
+    def validate_database_url(cls, v: SecretStr) -> SecretStr:
+        """Validate DATABASE_URL format"""
+        url = v.get_secret_value()
+        if not url.startswith(("postgresql://", "postgres://")):
+            raise ValueError("DATABASE_URL must start with postgresql:// or postgres://")
+        if "@" not in url or "/" not in url.split("@")[-1]:
+            raise ValueError("DATABASE_URL must include credentials and database name")
+        return v
+    
     # Redis
     REDIS_URL: str = Field(
         default="redis://localhost:6379",

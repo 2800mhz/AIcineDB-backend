@@ -11,7 +11,7 @@ from supabase import create_client, Client
 logger = logging.getLogger(__name__)
 
 
-@lru_cache()
+@lru_cache(maxsize=1)
 def get_supabase_client() -> Client:
     """
     Get singleton Supabase client instance with proper configuration.
