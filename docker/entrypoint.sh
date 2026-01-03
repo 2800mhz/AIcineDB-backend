@@ -3,26 +3,48 @@ set -e
 
 echo "Starting AIcineDB Backend..."
 
-# Wait for database to be ready
-if [ -n "$DATABASE_URL" ]; then
-    echo "Waiting for database to be ready..."
-    while ! nc -z $(echo $DATABASE_URL | sed 's/.*@\([^:]*\).*/\1/') $(echo $DATABASE_URL | sed 's/.*:\([0-9]*\).*/\1/') 2>/dev/null; do
-        echo "Database is unavailable - sleeping"
-        sleep 1
+# Wait for PostgreSQL to be ready
+if [ -n "$DATABASE_HOST" ]; then
+    echo "Waiting for PostgreSQL at $DATABASE_HOST:${DATABASE_PORT:-5432}..."
+    
+    max_attempts=30
+    attempt=0
+    
+    until nc -z "$DATABASE_HOST" "${DATABASE_PORT:-5432}" 2>/dev/null || [ $attempt -eq $max_attempts ]; do
+        echo "PostgreSQL is unavailable - sleeping (attempt $((attempt+1))/$max_attempts)"
+        sleep 2
+        attempt=$((attempt+1))
     done
-    echo "Database is up!"
+    
+    if [ $attempt -eq $max_attempts ]; then
+        echo "ERROR: PostgreSQL did not become available in time"
+        exit 1
+    fi
+    
+    echo "PostgreSQL is up!"
 fi
 
-# Run migrations if needed
-if [ "$RUN_MIGRATIONS" = "true" ]; then
-    echo "Running database migrations..."
-    python manage.py migrate
+# Wait for Redis to be ready
+if [ -n "$REDIS_HOST" ]; then
+    echo "Waiting for Redis at $REDIS_HOST:${REDIS_PORT:-6379}..."
+    
+    max_attempts=30
+    attempt=0
+    
+    until nc -z "$REDIS_HOST" "${REDIS_PORT:-6379}" 2>/dev/null || [ $attempt -eq $max_attempts ]; do
+        echo "Redis is unavailable - sleeping (attempt $((attempt+1))/$max_attempts)"
+        sleep 2
+        attempt=$((attempt+1))
+    done
+    
+    if [ $attempt -eq $max_attempts ]; then
+        echo "ERROR: Redis did not become available in time"
+        exit 1
+    fi
+    
+    echo "Redis is up!"
 fi
-
-# Collect static files
-echo "Collecting static files..."
-python manage.py collectstatic --noinput
 
 # Start the application
-echo "Starting gunicorn server..."
+echo "Starting application..."
 exec "$@"
