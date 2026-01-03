@@ -79,7 +79,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if self.enable_csp:
             # Restrictive CSP for API
             # Note: 'unsafe-inline' for styles is needed for API docs (Swagger/ReDoc)
-            # Consider using nonces or hashes in production if docs are disabled
+            # Note: img-src allows 'https:' to support external images in API responses
+            # These can be tightened in production if API docs are disabled
+            # Consider using nonces or hashes for inline styles when docs are disabled
             csp_directives = [
                 "default-src 'self'",
                 "script-src 'self'",

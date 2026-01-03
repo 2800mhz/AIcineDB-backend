@@ -90,6 +90,9 @@ bleach>=6.0.0,<7.0.0
 slowapi>=0.1.9,<1.0.0
 
 # Security & Authentication
+# Note: python-jose and pyjwt both provide JWT functionality.
+# python-jose is for full JOSE support (JWE, JWS), pyjwt for standard JWT.
+# Both are included for flexibility in future authentication implementations.
 python-jose[cryptography]>=3.4.0,<4.0.0
 passlib[bcrypt]>=1.7.4,<2.0.0
 cryptography>=42.0.4,<43.0.0
