@@ -61,7 +61,7 @@ services:
       SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
       
       # Application settings
-      APP_ENV: ${APP_ENV:-development}
+      ENV: ${ENV:-development}
       DEBUG: ${DEBUG:-true}
       PYTHONUNBUFFERED: 1
       
@@ -132,7 +132,7 @@ services:
       SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
       
       # Application settings
-      APP_ENV: ${APP_ENV:-development}
+      ENV: ${ENV:-development}
       PYTHONUNBUFFERED: 1
       
       # File storage
