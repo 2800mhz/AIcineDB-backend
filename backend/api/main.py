@@ -1,26 +1,37 @@
 """
-AI Cine Analyzer - Main FastAPI Application - FIXED
-Modern film analysis platform with Gemini AI
+AI Cine Analyzer - Main FastAPI Application
+Modern film analysis platform with Gemini AI - Security Hardened
 """
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, UploadFile, File, Form, Request 
-from backend.utils.auth import verify_admin, get_admin_emails, verify_creator_or_admin, get_current_user
-
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends
 
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import logging
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi import Depends
 import json
 
+# Security imports
+from backend.config import get_settings
+from backend.middleware import SecurityHeadersMiddleware, RequestTimeoutMiddleware
+from backend.auth.dependencies import require_admin
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+# Legacy auth imports (for backward compatibility during migration)
+from backend.utils.auth import verify_admin, get_admin_emails, verify_creator_or_admin, get_current_user
+
+# Database and tasks
 from backend.database.connection import get_db, init_db
 from backend.tasks.video_tasks import analyze_film_complete
+
+# Schemas
 from backend.models.schemas import (
     AnalysisRequest,
     AnalysisJobResponse,
@@ -30,6 +41,8 @@ from backend.models.schemas import (
     SearchFilters,
     HealthCheck
 )
+
+# Routers
 from backend.api.festivals import router as festivals_router
 from backend.api.upload import router as upload_router
 from backend.api.content import router as content_router
@@ -42,29 +55,61 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI
+# Load settings
+settings = get_settings()
+
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
+
+# Initialize FastAPI with security configurations
 app = FastAPI(
     title="AI Cine Analyzer",
     description="Professional AI-powered film analysis platform with visual, narrative, and audio analysis",
     version="2.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
+    # Hide docs in production unless DEBUG is enabled
+    docs_url="/docs" if settings.docs_enabled else None,
+    redoc_url="/redoc" if settings.docs_enabled else None,
 )
 
-# CORS middleware
+# Add rate limiter state
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Add security middleware (order matters - add in reverse order of execution)
+# 1. Security headers (last to execute, first to add)
+app.add_middleware(
+    SecurityHeadersMiddleware,
+    enable_hsts=settings.is_production,  # Only enforce HTTPS in production
+    enable_csp=True,
+)
+
+# 2. Request timeout tracking
+app.add_middleware(
+    RequestTimeoutMiddleware,
+    slow_request_threshold=5.0,
+)
+
+# 3. Trusted Host (only in production)
+if settings.is_production:
+    # Extract hostnames from CORS origins
+    allowed_hosts = [
+        "aicinedb.com",
+        "www.aicinedb.com",
+        "*.railway.app",
+    ]
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=allowed_hosts,
+    )
+
+# 4. CORS middleware (executes first, added last)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:8080",
-        "https://aicinedb.com",
-        "https://www.aicinedb.com",
-        "https://*.railway.app",  # Railway deployments
-        "*"  # Allow all origins for development (remove for production)
-    ],
+    allow_origins=settings.CORS_ORIGINS,  # Use settings instead of hardcoded list
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],  # Explicit methods
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin"],  # Explicit headers
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
 # Include routers
@@ -84,11 +129,23 @@ logger.info("✅ Content router registered at /api/content")
 async def startup_event():
     """Initialize resources on startup"""
     logger.info("🚀 AI Cine Analyzer starting up...")
+    logger.info(f"   Environment: {settings.ENV}")
+    logger.info(f"   Debug Mode: {settings.DEBUG}")
+    logger.info(f"   API Docs: {'Enabled' if settings.docs_enabled else 'Disabled'}")
     
     try:
         # Initialize database
         await init_db()
         logger.info("✓ Database initialized")
+        
+        # Log security features
+        logger.info("🔒 Security features enabled:")
+        logger.info("   • Rate limiting active")
+        logger.info("   • Security headers enabled")
+        logger.info("   • Request timeout tracking enabled")
+        logger.info(f"   • HSTS: {'Enabled' if settings.is_production else 'Disabled (dev mode)'}")
+        logger.info(f"   • Trusted hosts: {'Enabled' if settings.is_production else 'Disabled (dev mode)'}")
+        logger.info(f"   • CORS origins: {len(settings.CORS_ORIGINS)} allowed")
         
         logger.info("✓ AI Cine Analyzer ready!")
         
@@ -108,12 +165,18 @@ async def shutdown_event():
 # ============================================================================
 
 @app.get("/health", response_model=HealthCheck)
-async def health_check():
-    """Health check endpoint"""
+@limiter.limit("60/minute")  # Rate limit: 60 requests per minute
+async def health_check(request: Request):
+    """
+    Health check endpoint for container orchestration.
+    
+    Rate limited to 60 requests per minute.
+    """
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "2.0.0"
+        "version": "2.0.0",
+        "environment": settings.ENV,
     }
 
 
@@ -154,8 +217,13 @@ async def root():
 # ============================================================================
 
 @app.post("/api/analyze", response_model=AnalysisJobResponse, status_code=202)
-async def submit_analysis(request: AnalysisRequest):
-    """Submit a video URL for analysis"""
+@limiter.limit("10/minute")  # Rate limit: 10 analysis requests per minute
+async def submit_analysis(request: Request, analysis_request: AnalysisRequest):
+    """
+    Submit a video URL for analysis.
+    
+    Rate limited to 10 requests per minute to prevent abuse.
+    """
     try:
         async with get_db() as db:
             # ✅ Priority mapping (string → integer)
@@ -166,10 +234,10 @@ async def submit_analysis(request: AnalysisRequest):
             }
             
             # ✅ Eğer integer gelirse direkt kullan, değilse map'le
-            if isinstance(request.priority, int):
-                priority_value = request.priority
+            if isinstance(analysis_request.priority, int):
+                priority_value = analysis_request.priority
             else:
-                priority_value = priority_map.get(request.priority.lower(), 5)
+                priority_value = priority_map.get(analysis_request.priority.lower(), 5)
             
             # Create analysis job
             job = await db.fetch_one(
@@ -179,7 +247,7 @@ async def submit_analysis(request: AnalysisRequest):
                 RETURNING *
                 """,
                 values={
-                    "url": str(request.url), 
+                    "url": str(analysis_request.url), 
                     "priority": priority_value  # ✅ Integer olarak gönder
                 }
             )
@@ -188,7 +256,7 @@ async def submit_analysis(request: AnalysisRequest):
             # This ensures each analysis gets unique storage
             task = analyze_film_complete.delay(
                 job['id'], 
-                str(request.url)
+                str(analysis_request.url)
             )
             
             logger.info(f"🔥 Created job {job['id']} (priority: {priority_value})")
@@ -196,7 +264,7 @@ async def submit_analysis(request: AnalysisRequest):
             return AnalysisJobResponse(
                 job_id=job['id'],
                 status=job['status'],
-                url=str(request.url),
+                url=str(analysis_request.url),
                 created_at=job['created_at'],
                 celery_task_id=task.id
             )
