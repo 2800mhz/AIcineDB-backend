@@ -46,6 +46,8 @@ services:
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
       DATABASE_USER: ${POSTGRES_USER:-aicine_user}
+      JWT_SECRET: ${JWT_SECRET}
+      SUPABASE_JWT_SECRET:  ${SUPABASE_JWT_SECRET}
       
       # Redis
       REDIS_URL: redis://redis:6379
@@ -117,6 +119,8 @@ services:
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
       DATABASE_USER: ${POSTGRES_USER:-aicine_user}
+      JWT_SECRET: ${JWT_SECRET}
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
       
       # Redis
       REDIS_URL: redis://redis:6379

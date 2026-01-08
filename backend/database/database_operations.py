@@ -474,11 +474,48 @@ class DatabaseOperations:
         )
     
     async def _create_audio_features(self, film_id: int, audio_features: Dict):
-        """Create audio features record"""
+        """Create audio features record - FIXED with type casting"""
         if not audio_features:
+            logger.warning(f"No audio features to save for film {film_id}")
             return
         
         logger.info(f"💾 Saving audio features...")
+        
+        # ✅ CRITICAL:  Ensure correct types (TEXT vs FLOAT)
+        tempo = audio_features.get('tempo')
+        mood = audio_features. get('mood')
+        intensity = audio_features.get('intensity')
+        pacing = audio_features.get('pacing')
+        
+        # Convert to string if needed (TEXT columns)
+        tempo = str(tempo) if tempo is not None else None
+        mood = str(mood) if mood is not None else None
+        intensity = str(intensity) if intensity is not None else None
+        pacing = str(pacing) if pacing is not None else None
+        
+        # FLOAT columns - ensure they are float or None
+        avg_energy = audio_features.get('avg_energy')
+        spectral_brightness = audio_features.get('spectral_brightness')
+        speech_ratio = audio_features.get('speech_ratio')
+        
+        # Convert to float if needed
+        try:
+            avg_energy = float(avg_energy) if avg_energy is not None else None
+        except (ValueError, TypeError):
+            logger.warning(f"⚠️ Invalid avg_energy value: {avg_energy}, setting to None")
+            avg_energy = None
+        
+        try: 
+            spectral_brightness = float(spectral_brightness) if spectral_brightness is not None else None
+        except (ValueError, TypeError):
+            logger.warning(f"⚠️ Invalid spectral_brightness value: {spectral_brightness}, setting to None")
+            spectral_brightness = None
+        
+        try:
+            speech_ratio = float(speech_ratio) if speech_ratio is not None else None
+        except (ValueError, TypeError):
+            logger.warning(f"⚠️ Invalid speech_ratio value: {speech_ratio}, setting to None")
+            speech_ratio = None
         
         query = """
             INSERT INTO audio_features (
@@ -493,15 +530,17 @@ class DatabaseOperations:
             query=query,
             values={
                 "film_id": film_id,
-                "tempo": audio_features.get('tempo'),
-                "mood": audio_features.get('mood'),
-                "intensity": audio_features.get('intensity'),
-                "pacing": audio_features.get('pacing'),
-                "avg_energy": audio_features.get('avg_energy'),
-                "spectral_brightness": audio_features.get('spectral_brightness'),
-                "speech_ratio": audio_features.get('speech_ratio')
+                "tempo": tempo,
+                "mood": mood,
+                "intensity":  intensity,
+                "pacing":  pacing,
+                "avg_energy": avg_energy,
+                "spectral_brightness": spectral_brightness,
+                "speech_ratio": speech_ratio
             }
         )
+        
+        logger.info(f"✅ Audio features saved for film {film_id}")
     
     # Getter methods
     async def _get_shots(self, film_id: int) -> List[Dict]:
