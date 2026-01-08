@@ -17,12 +17,18 @@
     }
   ],
   "env": {
-    "PYTHONPATH": "."
+    "PYTHONPATH": "$PYTHONPATH:/var/task",
+    "GEMINI_API_KEY": "@gemini_api_key",
+    "OPENAI_API_KEY": "@openai_api_key",
+    "SUPABASE_URL": "@supabase_url",
+    "SUPABASE_SERVICE_KEY": "@supabase_service_key",
+    "DATABASE_URL": "@database_url",
+    "REDIS_URL": "@redis_url"
   },
   "functions": {
-    "api/*.py": {
+    "api/index.py": {
       "memory": 1024,
-      "maxDuration": 10
+      "maxDuration": 30
     }
   }
 }
